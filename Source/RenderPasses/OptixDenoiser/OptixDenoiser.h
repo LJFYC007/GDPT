@@ -147,7 +147,7 @@ private:
     // GUI helpers for choosing between different OptiX AI denoiser modes
 
     Gui::DropdownList mModelChoices = {};
-    uint32_t mSelectedModel = OptixDenoiserModelKind::OPTIX_DENOISER_MODEL_KIND_HDR;
+    uint32_t mSelectedModel = OptixDenoiserModelKind::OPTIX_DENOISER_MODEL_KIND_AOV;
 
     // Optix context
 
@@ -165,9 +165,9 @@ private:
     {
         // Various OptiX denoiser parameters and handles.  Explicitly initialize everything, just to be sure.
         OptixDenoiserOptions options = {0u, 0u};
-        OptixDenoiserModelKind modelKind = OptixDenoiserModelKind::OPTIX_DENOISER_MODEL_KIND_HDR;
+        OptixDenoiserModelKind modelKind = OptixDenoiserModelKind::OPTIX_DENOISER_MODEL_KIND_AOV;
         OptixDenoiser denoiser = nullptr;
-        OptixDenoiserParams params = {0u, static_cast<CUdeviceptr>(0), 0.0f, static_cast<CUdeviceptr>(0)};
+        OptixDenoiserParams params = {static_cast<CUdeviceptr>(0), 0.0f, static_cast<CUdeviceptr>(0), 0u};
         OptixDenoiserSizes sizes = {};
 
         // TODO: Parameters currently set to false and not exposed to the user.  These parameters are here to

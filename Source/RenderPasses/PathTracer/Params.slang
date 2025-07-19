@@ -89,8 +89,9 @@ struct PathTracerParams
     uint2   screenTiles = { 0, 0 };     ///< Number of screen-tiles. Screen tiles may extend outside the frame.
 
     uint    frameCount = 0;             ///< Frames rendered. This is used as random seed.
-    uint    seed = 0;                   ///< Random seed. This will get updated from the host depending on settings.
-    uint2   _pad0;
+    uint seed = 0;                      ///< Random seed. This will get updated from the host depending on settings.
+    int xDiff = 0;
+    int yDiff = 0;
 
 #ifndef HOST_CODE
     /** Computes the offset into the tiled sample buffer for a given tile.

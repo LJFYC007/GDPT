@@ -1303,6 +1303,9 @@ namespace Falcor
         {
             mCameraList.push_back({ camId, mCameras[camId]->getName() });
         }
+        auto camera = mCameras[mSelectedCamera];
+        camera->setIsAnimated(false);
+        mpAnimationController->setEnabled(false);
     }
 
     void Scene::updateGeometryStats()

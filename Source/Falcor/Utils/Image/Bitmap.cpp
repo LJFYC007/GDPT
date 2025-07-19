@@ -328,8 +328,8 @@ Bitmap::UniqueConstPtr Bitmap::createFromFile(const std::filesystem::path& path,
 
     if (fifFormat == FIF_EXR)
     {
-        if (isFloat16Exr(file))
-            importFlags |= ImportFlags::ConvertToFloat16;
+        // if (isFloat16Exr(file))
+            // importFlags |= ImportFlags::ConvertToFloat16;
     }
 
     FIMEMORY* memory = FreeImage_OpenMemory((BYTE*)file.getData(), file.getSize());

@@ -64,7 +64,7 @@ OptixDeviceContext initOptix(Falcor::Device* pDevice)
 
     OPTIX_CHECK(optixInit());
 
-    FALCOR_CHECK(g_optixFunctionTable.optixDeviceContextCreate, "OptiX function table not initialized.");
+    FALCOR_CHECK(g_optixFunctionTable_105.optixDeviceContextCreate, "OptiX function table not initialized.");
 
     // Build our OptiX context
     OptixDeviceContext optixContext;

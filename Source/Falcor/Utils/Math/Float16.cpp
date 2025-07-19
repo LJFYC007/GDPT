@@ -174,7 +174,7 @@ uint16_t float32ToFloat16(float value)
 
         if (e > 30)
         {
-            overflow(); // Cause a hardware floating point overflow;
+            // overflow(); // Cause a hardware floating point overflow;
 
             return uint16_t(s | 0x7c00); // Return infinity with same sign as f.
         }

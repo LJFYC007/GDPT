@@ -111,6 +111,9 @@ namespace
     };
 
     // Scripting options.
+    const std::string kXDiff = "xDiff";
+    const std::string kYDiff = "yDiff";
+
     const std::string kSamplesPerPixel = "samplesPerPixel";
     const std::string kMaxSurfaceBounces = "maxSurfaceBounces";
     const std::string kMaxDiffuseBounces = "maxDiffuseBounces";
@@ -218,6 +221,9 @@ void PathTracer::parseProperties(const Properties& props)
         else if (key == kMaxDiffuseBounces) mStaticParams.maxDiffuseBounces = value;
         else if (key == kMaxSpecularBounces) mStaticParams.maxSpecularBounces = value;
         else if (key == kMaxTransmissionBounces) mStaticParams.maxTransmissionBounces = value;
+
+        else if (key == kXDiff) mParams.xDiff = value;
+        else if (key == kYDiff) mParams.yDiff = value;
 
         // Sampling parameters
         else if (key == kSampleGenerator) mStaticParams.sampleGenerator = value;
@@ -336,6 +342,8 @@ Properties PathTracer::getProperties() const
     }
 
     Properties props;
+    props[kXDiff] = mParams.xDiff;
+    props[kYDiff] = mParams.yDiff;
 
     // Rendering parameters
     props[kSamplesPerPixel] = mStaticParams.samplesPerPixel;
