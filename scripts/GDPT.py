@@ -56,19 +56,19 @@ def render_graph_PathTracer():
     g.markOutput("AccumulatePassX.output")
     g.markOutput("AccumulatePassY.output")
 
-    ReconstructionPass = createPass("ReconstructionPass", {})
+    ReconstructionPass = createPass("ReconstructionPass", {'num': 50})
     g.addPass(ReconstructionPass, "ReconstructionPass")
     g.addEdge("AccumulatePass.output", "ReconstructionPass.base")
     g.addEdge("AccumulatePassX.output", "ReconstructionPass.inputX")
     g.addEdge("AccumulatePassY.output", "ReconstructionPass.inputY")
     g.markOutput("ReconstructionPass.output")
 
-    ErrorMeasurePass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\output\\reference.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Difference'})
+    ErrorMeasurePass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\output\\reference-staircase.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Difference'})
     g.addPass(ErrorMeasurePass, "ErrorMeasurePass")
     g.addEdge("ReconstructionPass.output", "ErrorMeasurePass.Source")
     g.markOutput("ErrorMeasurePass.Output")
 
-    PTErrorMeasurePass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\output\\reference.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Difference'})
+    PTErrorMeasurePass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\output\\reference-staircase.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Difference'})
     g.addPass(PTErrorMeasurePass, "PTErrorMeasurePass")
     g.addEdge("AccumulatePass.output", "PTErrorMeasurePass.Source")
     g.markOutput("PTErrorMeasurePass.Output")
@@ -78,6 +78,6 @@ PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-# m.clock.exitFrame = 130
+m.clock.exitFrame = 130
 m.frameCapture.outputDir = "../../../../output"
-m.frameCapture.addFrames(m.activeGraph, [64, 128])
+m.frameCapture.addFrames(m.activeGraph, [16, 32, 64, 128])
