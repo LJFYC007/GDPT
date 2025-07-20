@@ -59,4 +59,6 @@ private:
     ref<ComputePass> mpCopyPass;
     /// The current scene (or nullptr if no scene)
     ref<Scene> mpScene;
+
+    int num = 1;
 };

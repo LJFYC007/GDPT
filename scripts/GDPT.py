@@ -78,7 +78,6 @@ PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-m.clock.exitFrame = 130
+# m.clock.exitFrame = 130
 m.frameCapture.outputDir = "../../../../output"
-
 m.frameCapture.addFrames(m.activeGraph, [64, 128])

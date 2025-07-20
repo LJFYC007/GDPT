@@ -21,11 +21,11 @@ void main(uint3 dispatchThreadID: SV_DispatchThreadID)
     uint x = dispatchThreadID.x;
     uint y = dispatchThreadID.y;
     if (x >= 1)
-        outputX[uint2(x - 1, y)] += 0.5 * (base[uint2(x, y)] - base[uint2(x - 1, y)]);
+        outputX[uint2(x - 1, y)] += 0.5 * (base[uint2(x, y)] - input1[uint2(x - 1, y)]);
     if (y >= 1)
-        outputY[uint2(x, y - 1)] += 0.5 * (base[uint2(x, y)] - base[uint2(x, y - 1)]);
+        outputY[uint2(x, y - 1)] += 0.5 * (base[uint2(x, y)] - input2[uint2(x, y - 1)]);
     if (x + 1 < gResolution.x)
-        outputX[uint2(x, y)] += 0.5 * (base[uint2(x + 1, y)] - base[uint2(x, y)]);
+        outputX[uint2(x, y)] += 0.5 * (input3[uint2(x + 1, y)] - base[uint2(x, y)]);
     if (y + 1 < gResolution.y)
-        outputY[uint2(x, y)] += 0.5 * (base[uint2(x, y + 1)] - base[uint2(x, y)]);
+        outputY[uint2(x, y)] += 0.5 * (input4[uint2(x, y + 1)] - base[uint2(x, y)]);
 }

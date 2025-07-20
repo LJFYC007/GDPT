@@ -39,13 +39,22 @@ const std::string kInputXChannelEventImage = "inputX";
 const std::string kInputYChannelEventImage = "inputY";
 const std::string kOutputChannelEventImage = "output";
 const std::string kTempChannelEventImage = "temp";
+const std::string kNum = "num";
 }
 
-ReconstructionPass::ReconstructionPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice) {}
+ReconstructionPass::ReconstructionPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
+{
+    for (auto [key, value] : props)
+    {
+        if (key == kNum) num = value;
+    }
+}
 
 Properties ReconstructionPass::getProperties() const
 {
-    return {};
+    Properties props;
+    props[kNum] = num;
+    return props;
 }
 
 RenderPassReflection ReconstructionPass::reflect(const CompileData& compileData)
@@ -126,11 +135,14 @@ void ReconstructionPass::execute(RenderContext* pRenderContext, const RenderData
     vars["output"] = renderData.getTexture(kOutputChannelEventImage);
     vars["PerFrameCB"]["gResolution"] = resolution;
 
-    for ( int i = 0; i < 30; ++ i)
+    for ( int i = 0; i < num; ++ i)
     {
         mpComputePass->execute(pRenderContext, uint3(resolution, 1));
         mpClearPass->execute(pRenderContext, uint3(resolution, 1));
     }
 }
 
-void ReconstructionPass::renderUI(Gui::Widgets& widget) {}
+void ReconstructionPass::renderUI(Gui::Widgets& widget)
+{
+    widget.var("Number of iterations", num, 1, 100);
+}
