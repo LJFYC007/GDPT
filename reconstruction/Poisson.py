@@ -41,10 +41,10 @@ def poisson_reconstruct(grad_x, grad_y, I0):
 
         res_history = []
         def cb_xk(xk):
-                r = b - A @ xk
-                res = np.linalg.norm(r)
-                res_history.append(res)
-                print(f"[ch {ch}] iter {len(res_history):3d}: residual = {res:.6e}")
+            r = b - A @ xk
+            res = np.linalg.norm(r)
+            res_history.append(res)
+            print(f"[ch {ch}] iter {len(res_history):3d}: residual = {res:.6e}")
 
         def mv(v):
             v_img = v.reshape(H, W, 1)
@@ -52,16 +52,22 @@ def poisson_reconstruct(grad_x, grad_y, I0):
 
         A = LinearOperator((H*W, H*W), matvec=mv, dtype=np.float32)
 
-        sol, info = cg(A, b, x0, rtol=1e-10, atol=0, maxiter=500, callback=cb_xk)
+        sol, info = cg(A, b, x0, rtol=1e-10, atol=0, maxiter=500)
+        # sol, info = cg(A, b, x0, rtol=1e-10, atol=0, maxiter=500, callback=cb_xk)
 
         result[..., ch] = sol.reshape(H, W)
 
     return result
 
 # it seems grad X Y is swapped, since H, W is swapped
-gradY = cv2.imread("../result/gradientX-64spp.exr", cv2.IMREAD_UNCHANGED)
-gradX = cv2.imread("../result/gradientY-64spp.exr", cv2.IMREAD_UNCHANGED)
-pt    = cv2.imread("../result/pt-64spp.exr", cv2.IMREAD_UNCHANGED)
+pt = cv2.imread("../result/pt-64spp.exr", cv2.IMREAD_UNCHANGED)
 
-reconstructed = poisson_reconstruct(gradX, gradY, pt)
-cv2.imwrite("reconstructed_lehtinen.exr", reconstructed.astype(np.float32))
+# Process different SPP values for gradients
+spp_values = [32, 64, 1024]
+for spp in spp_values:
+    gradY = cv2.imread(f"../result/gradientX-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
+    gradX = cv2.imread(f"../result/gradientY-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
+
+    reconstructed = poisson_reconstruct(gradX, gradY, pt)
+    cv2.imwrite(f"../result/poisson-{spp}spp.exr", reconstructed.astype(np.float32))
+    print(f"Completed reconstruction with gradient {spp}spp and pt 64spp")
