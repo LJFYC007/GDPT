@@ -76,6 +76,8 @@ Texture2D<float4> gViewW; // Optional
 
 // Outputs
 RWTexture2D<float4> gOutputColor;
+RWTexture2D<float4> gOutputGradientX;
+RWTexture2D<float4> gOutputGradientY;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
@@ -98,7 +100,7 @@ struct ShadowRayData
 };
 
 /**
- * Payload for scatter ray (up to 72B).
+ * Payload for scatter ray (up to 88B).
  */
 struct ScatterRayData
 {
@@ -358,11 +360,11 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     }
 
     // Add contribution of direct light from analytic lights.
-    if (kUseAnalyticLights)
-    {
-        float3 Lr = evalDirectAnalytic(sd, mi, rayData.sg);
-        rayData.radiance += rayData.thp * Lr;
-    }
+    // if (kUseAnalyticLights)
+    // {
+    //     float3 Lr = evalDirectAnalytic(sd, mi, rayData.sg);
+    //     rayData.radiance += rayData.thp * Lr;
+    // }
 
     // Generate scatter ray for the next path segment.
     // The raygen shader will continue the path based on the returned payload.
@@ -389,16 +391,16 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
  * @param[in] frameDim Dimension of the frame in pixels.
  * @return Returns the estimated color (radiance).
  */
-float3 tracePath(const uint2 pixel, const uint2 frameDim)
+void tracePath(const uint2 pixel, const uint2 frameDim)
 {
-    float3 outColor = float3(0.f);
+    float3 baseColor;
+    float3 offsetColor;
 
-    const float3 primaryRayOrigin = gScene.camera.getPosition();
-    const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
-
-    const HitInfo hit = HitInfo(gVBuffer[pixel]);
-    if (hit.isValid())
     {
+        const float3 primaryRayOrigin = gScene.camera.getPosition();
+        const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
+
+        const HitInfo hit = HitInfo(gVBuffer[pixel]);
         // Pixel represents a valid primary hit. Compute its contribution.
 
         const bool isCurveHit = hit.getType() == HitType::Curve;
@@ -430,15 +432,15 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             rayOrigin = sd.computeRayOrigin();
         }
 
-        if (kComputeDirect)
-        {
-            // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
-            outColor += mi.getProperties(sd).emission;
+        // if (kComputeDirect)
+        // {
+        //     // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
+        //     outColor += mi.getProperties(sd).emission;
 
-            // Add contribution of direct light from analytic lights.
-            // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
-            outColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
-        }
+        //     // Add contribution of direct light from analytic lights.
+        //     // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
+        //     outColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
+        // }
 
         // Prepare ray payload.
         ScatterRayData rayData = ScatterRayData(sg);
@@ -456,15 +458,96 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         }
 
         // Store contribution from scatter ray.
-        outColor += rayData.radiance;
-    }
-    else
-    {
-        // Background pixel.
-        outColor = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
+        baseColor = rayData.radiance;
     }
 
-    return outColor;
+    uint2 offset;
+    if (gFrameCount % 4 == 0) offset = uint2(1, 0);
+    else if (gFrameCount % 4 == 1) offset = uint2(0, 1);
+    else if (gFrameCount % 4 == 2) offset = uint2(-1, 0);
+    else offset = uint2(0, -1);
+
+    if (pixel.x + offset.x < 0) offset.x = -offset.x;
+    if (pixel.y + offset.y < 0) offset.y = -offset.y;
+    if (pixel.x + offset.x >= frameDim.x) offset.x = -offset.x;
+    if (pixel.y + offset.y >= frameDim.y) offset.y = -offset.y;
+
+    {
+        const float3 primaryRayOrigin = gScene.camera.getPosition();
+        const float3 primaryRayDir = getPrimaryRayDir(pixel + offset, frameDim, gScene.camera);
+
+        const HitInfo hit = HitInfo(gVBuffer[pixel + offset]);
+        // Pixel represents a valid primary hit. Compute its contribution.
+
+        const bool isCurveHit = hit.getType() == HitType::Curve;
+
+        // Load shading data.
+        ShadingData sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir);
+
+        // Create material instance at shading point.
+        let lod = ExplicitLodTextureSampler(0.f);
+        let mi = gScene.materials.getMaterialInstance(sd, lod);
+
+        // Create sample generator.
+        SampleGenerator sg = SampleGenerator(pixel, gFrameCount);
+
+        // Advance the generator to the first available dimension.
+        // TODO: This is potentially expensive. We may want to store/restore the state from memory if it becomes a problem.
+        for (uint i = 0; i < gPRNGDimension; i++)
+            sampleNext1D(sg);
+
+        // Compute ray origin for new rays spawned from the G-buffer.
+        float3 rayOrigin;
+        if (isCurveHit)
+        {
+            // For curves, we set the new origin at the sphere center.
+            rayOrigin = sd.posW - sd.curveRadius * sd.frame.N;
+        }
+        else
+        {
+            rayOrigin = sd.computeRayOrigin();
+        }
+
+        // if (kComputeDirect)
+        // {
+        //     // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
+        //     offsetColor += mi.getProperties(sd).emission;
+
+        //     // Add contribution of direct light from analytic lights.
+        //     // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
+        //     offsetColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
+        // }
+
+        // Prepare ray payload.
+        ScatterRayData rayData = ScatterRayData(sg);
+
+        // Generate scatter ray.
+        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
+            rayData.terminated = true;
+
+        // Follow path into the scene and compute its total contribution.
+        for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
+        {
+            // Trace scatter ray. If it hits geometry, the closest hit shader samples
+            // direct illumination and generates the next scatter ray.
+            traceScatterRay(rayData);
+        }
+
+        // Store contribution from scatter ray.
+        offsetColor = rayData.radiance;
+    }
+
+    gOutputColor[pixel] = float4(baseColor, 1.f);
+
+    // 4 is pdf
+    if (offset.x == 1 && offset.y == 0)
+        gOutputGradientX[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    if (offset.x == 0 && offset.y == 1)
+        gOutputGradientY[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    if (offset.x == -1 && offset.y == 0)
+        gOutputGradientX[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    if (offset.x == 0 && offset.y == -1)
+        gOutputGradientY[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
 }
 
 //
@@ -616,7 +699,5 @@ void rayGen()
     uint2 pixel = DispatchRaysIndex().xy;
     uint2 frameDim = DispatchRaysDimensions().xy;
 
-    float3 color = tracePath(pixel, frameDim);
-
-    gOutputColor[pixel] = float4(color, 1.f);
+    tracePath(pixel, frameDim);
 }

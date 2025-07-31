@@ -40,7 +40,7 @@ const char kShaderFile[] = "RenderPasses/MinimalPathTracer/MinimalPathTracer.rt.
 
 // Ray tracing settings that affect the traversal stack size.
 // These should be set as small as possible.
-const uint32_t kMaxPayloadSizeBytes = 72u;
+const uint32_t kMaxPayloadSizeBytes = 110u;
 const uint32_t kMaxRecursionDepth = 2u;
 
 const char kInputViewDir[] = "viewW";
@@ -55,6 +55,8 @@ const ChannelList kInputChannels = {
 const ChannelList kOutputChannels = {
     // clang-format off
     { "color",          "gOutputColor", "Output color (sum of direct and indirect)", false, ResourceFormat::RGBA32Float },
+    { "gradientX",      "gOutputGradientX", "Output gradient in X direction", false, ResourceFormat::RGBA32Float },
+    { "gradientY",      "gOutputGradientY", "Output gradient in Y direction", false, ResourceFormat::RGBA32Float },
     // clang-format on
 };
 
@@ -120,14 +122,12 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
 
     // If we have no scene, just clear the outputs and return.
     if (!mpScene)
-    {
-        for (auto it : kOutputChannels)
-        {
-            Texture* pDst = renderData.getTexture(it.name).get();
-            if (pDst)
-                pRenderContext->clearTexture(pDst);
-        }
         return;
+    for (auto it : kOutputChannels)
+    {
+        Texture* pDst = renderData.getTexture(it.name).get();
+        if (pDst)
+            pRenderContext->clearTexture(pDst);
     }
 
     if (is_set(mpScene->getUpdates(), IScene::UpdateFlags::RecompileNeeded) ||
