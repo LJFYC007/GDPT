@@ -11,8 +11,8 @@ def render_graph_PathTracer():
     g.addEdge("VBufferRT.vbuffer", "PathTracer.vbuffer")
     g.addEdge("VBufferRT.viewW", "PathTracer.viewW")
     g.addEdge("PathTracer.color", "AccumulatePass.input")
-    g.markOutput("PathTracer.color")
     g.markOutput("AccumulatePass.output")
+    g.markOutput("PathTracer.color")
 
     AccumulatePassX = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single', 'maxFrameCount': 1024})
     g.addPass(AccumulatePassX, "AccumulatePassX")

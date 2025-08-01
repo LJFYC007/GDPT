@@ -40,8 +40,8 @@ const char kShaderFile[] = "RenderPasses/MinimalPathTracer/MinimalPathTracer.rt.
 
 // Ray tracing settings that affect the traversal stack size.
 // These should be set as small as possible.
-const uint32_t kMaxPayloadSizeBytes = 110u;
-const uint32_t kMaxRecursionDepth = 2u;
+const uint32_t kMaxPayloadSizeBytes = 120u;
+const uint32_t kMaxRecursionDepth = 3u;
 
 const char kInputViewDir[] = "viewW";
 

@@ -109,7 +109,12 @@ struct ScatterRayData
     float3 thp;       ///< Current path throughput. This is updated at each path vertex.
     uint pathLength;  ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
     float3 origin;    ///< Next path segment origin.
+    float pdf;
     float3 direction; ///< Next path segment direction.
+    bool offset;
+    float3 nextPoint;
+    float3 normal;
+    float3 hitPoint;
 
     SampleGenerator sg; ///< Per-ray state for the sample generator (up to 16B).
 
@@ -122,6 +127,8 @@ struct ScatterRayData
         this.pathLength = 0;
         this.radiance = float3(0, 0, 0);
         this.thp = float3(1, 1, 1);
+        this.pdf = 1.f;
+        this.offset = false;
         this.origin = float3(0, 0, 0);
         this.direction = float3(0, 0, 0);
         this.sg = sg;
@@ -298,6 +305,16 @@ float3 evalDirectAnalytic(const ShadingData sd, const IMaterialInstance mi, inou
  */
 bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool isCurveHit, float3 rayOrigin, inout ScatterRayData rayData)
 {
+    if (rayData.offset == true)
+    {
+        rayData.origin = rayOrigin;
+        rayData.direction = normalize(rayData.nextPoint - rayData.origin);
+        rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
+        rayData.pdf = 1.f;
+        rayData.normal = sd.frame.N;
+        return any(rayData.thp > 0.f);
+    }
+
     // Sample material.
     BSDFSample bsdfSample;
     if (mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
@@ -308,7 +325,9 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
             rayData.origin = sd.computeRayOrigin(false);
         }
         rayData.direction = bsdfSample.wo;
-        rayData.thp *= bsdfSample.weight;
+        rayData.thp *= bsdfSample.weight * bsdfSample.pdf;
+        rayData.pdf *= bsdfSample.pdf;
+        rayData.normal = sd.frame.N;
         return any(rayData.thp > 0.f);
     }
 
@@ -329,15 +348,18 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
 
     // Load shading data.
     ShadingData sd = loadShadingData(hit, rayData.origin, rayData.direction);
+    rayData.hitPoint = sd.posW;
 
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod);
 
     // Add emitted light.
-    if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0))
+    if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0) && any(mi.getProperties(sd).emission > 0.f))
     {
-        rayData.radiance += rayData.thp * mi.getProperties(sd).emission;
+        rayData.radiance = rayData.thp * mi.getProperties(sd).emission;
+        rayData.terminated = true;
+        return;
     }
 
     // Check whether to terminate based on max depth.
@@ -393,8 +415,15 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
  */
 void tracePath(const uint2 pixel, const uint2 frameDim)
 {
-    float3 baseColor;
-    float3 offsetColor;
+    float3 baseRadiance = float3(0.f);
+    float3 offsetRadiance = float3(0.f);
+    float basepdf;
+    uint baseLength;
+    float3 basePoint[10], baseNormal[10];
+    float3 offsetPoint, offsetNormal;
+    float jacobian = 1.f;
+
+    bool stop = false;
 
     {
         const float3 primaryRayOrigin = gScene.camera.getPosition();
@@ -449,16 +478,24 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
             rayData.terminated = true;
 
+        basePoint[1] = sd.posW;
+        baseNormal[1] = sd.frame.N;
+
         // Follow path into the scene and compute its total contribution.
         for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
         {
             // Trace scatter ray. If it hits geometry, the closest hit shader samples
             // direct illumination and generates the next scatter ray.
             traceScatterRay(rayData);
+
+            basePoint[depth + 2] = rayData.hitPoint;
+            baseNormal[depth + 2] = rayData.normal;
+            baseLength = depth + 2;
         }
 
         // Store contribution from scatter ray.
-        baseColor = rayData.radiance;
+        baseRadiance = rayData.radiance;
+        basepdf = rayData.pdf;
     }
 
     uint2 offset;
@@ -466,6 +503,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     else if (gFrameCount % 4 == 1) offset = uint2(0, 1);
     else if (gFrameCount % 4 == 2) offset = uint2(-1, 0);
     else offset = uint2(0, -1);
+    offset = uint2(0, 0);
 
     if (pixel.x + offset.x < 0) offset.x = -offset.x;
     if (pixel.y + offset.y < 0) offset.y = -offset.y;
@@ -520,34 +558,51 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
         // Prepare ray payload.
         ScatterRayData rayData = ScatterRayData(sg);
+        rayData.offset = true;
+        rayData.nextPoint = basePoint[2];
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
             rayData.terminated = true;
+
+        offsetPoint = sd.posW;
 
         // Follow path into the scene and compute its total contribution.
         for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
         {
             // Trace scatter ray. If it hits geometry, the closest hit shader samples
             // direct illumination and generates the next scatter ray.
+            rayData.nextPoint = basePoint[depth + 3];
             traceScatterRay(rayData);
+            if (depth == 0)
+                offsetNormal = rayData.normal;
+            if (length(rayData.hitPoint - basePoint[depth + 2]) > 0.00001f)
+            {
+                rayData.terminated = true;
+                rayData.radiance = float3(0.f);
+            }
         }
 
         // Store contribution from scatter ray.
-        offsetColor = rayData.radiance;
+        offsetRadiance = rayData.radiance;
     }
 
-    gOutputColor[pixel] = float4(baseColor, 1.f);
+    float dx = length(basePoint[2] - basePoint[1]);
+    float dy = length(basePoint[2] - offsetPoint);
+    jacobian *= (dot(offsetNormal, basePoint[2] - offsetPoint) / dot(baseNormal[2], basePoint[2] - basePoint[1])) * dx * dx / dy / dy;
+
+    if (basepdf > 0.f && any(offsetRadiance > 0.f))
+        gOutputColor[pixel] = float4(offsetRadiance * jacobian / basepdf, 1.f);
 
     // 4 is pdf
-    if (offset.x == 1 && offset.y == 0)
-        gOutputGradientX[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
-    if (offset.x == 0 && offset.y == 1)
-        gOutputGradientY[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
-    if (offset.x == -1 && offset.y == 0)
-        gOutputGradientX[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
-    if (offset.x == 0 && offset.y == -1)
-        gOutputGradientY[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    // if (offset.x == 1 && offset.y == 0)
+    //     gOutputGradientX[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    // if (offset.x == 0 && offset.y == 1)
+    //     gOutputGradientY[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    // if (offset.x == -1 && offset.y == 0)
+    //     gOutputGradientX[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    // if (offset.x == 0 && offset.y == -1)
+    //     gOutputGradientY[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
 }
 
 //
@@ -561,11 +616,11 @@ void scatterMiss(inout ScatterRayData rayData)
     rayData.terminated = true;
 
     // Add contribution from distant light (env map) in this direction.
-    if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
-    {
-        float3 Le = gScene.envMap.eval(WorldRayDirection());
-        rayData.radiance += rayData.thp * Le;
-    }
+    // if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
+    // {
+    //     float3 Le = gScene.envMap.eval(WorldRayDirection());
+    //     rayData.radiance += rayData.thp * Le;
+    // }
 }
 
 [shader("miss")]
