@@ -305,32 +305,22 @@ float3 evalDirectAnalytic(const ShadingData sd, const IMaterialInstance mi, inou
  */
 bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool isCurveHit, float3 rayOrigin, inout ScatterRayData rayData)
 {
-    if (rayData.offset == true)
-    {
-        rayData.origin = rayOrigin;
-        rayData.direction = normalize(rayData.nextPoint - rayData.origin);
-        rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
-        rayData.pdf = 1.f;
-        rayData.normal = sd.frame.N;
-        return any(rayData.thp > 0.f);
-    }
-
     // Sample material.
     BSDFSample bsdfSample;
-    if (mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
+    if (rayData.offset || mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
     {
         rayData.origin = rayOrigin;
-        if (!isCurveHit && bsdfSample.isLobe(LobeType::Transmission))
-        {
-            rayData.origin = sd.computeRayOrigin(false);
-        }
-        rayData.direction = bsdfSample.wo;
-        rayData.thp *= bsdfSample.weight * bsdfSample.pdf;
-        rayData.pdf *= bsdfSample.pdf;
-        rayData.normal = sd.frame.N;
+        if (rayData.offset == true)
+            rayData.direction = normalize(rayData.nextPoint - rayData.origin);
+        else
+            rayData.direction = bsdfSample.wo;
+
+        rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
+        rayData.pdf *= mi.evalPdf(sd, rayData.direction);
         return any(rayData.thp > 0.f);
     }
 
+    rayData.pdf = 0.f;
     return false;
 }
 
@@ -349,6 +339,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // Load shading data.
     ShadingData sd = loadShadingData(hit, rayData.origin, rayData.direction);
     rayData.hitPoint = sd.posW;
+    rayData.normal = sd.frame.N;
 
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
@@ -417,7 +408,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 {
     float3 baseRadiance = float3(0.f);
     float3 offsetRadiance = float3(0.f);
-    float basepdf;
+    float basepdf, offsetpdf;
     uint baseLength;
     float3 basePoint[10], baseNormal[10];
     float3 offsetPoint, offsetNormal;
@@ -497,13 +488,15 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         baseRadiance = rayData.radiance;
         basepdf = rayData.pdf;
     }
+    if (!any(baseRadiance > 0.f) || basepdf == 0.f)
+        return;
 
     uint2 offset;
     if (gFrameCount % 4 == 0) offset = uint2(1, 0);
     else if (gFrameCount % 4 == 1) offset = uint2(0, 1);
     else if (gFrameCount % 4 == 2) offset = uint2(-1, 0);
     else offset = uint2(0, -1);
-    offset = uint2(0, 0);
+    // offset = uint2(0, 0);
 
     if (pixel.x + offset.x < 0) offset.x = -offset.x;
     if (pixel.y + offset.y < 0) offset.y = -offset.y;
@@ -574,8 +567,8 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             // direct illumination and generates the next scatter ray.
             rayData.nextPoint = basePoint[depth + 3];
             traceScatterRay(rayData);
-            if (depth == 0)
-                offsetNormal = rayData.normal;
+            // if (depth == 0)
+            //     offsetNormal = rayData.normal;
             if (length(rayData.hitPoint - basePoint[depth + 2]) > 0.00001f)
             {
                 rayData.terminated = true;
@@ -585,24 +578,39 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
         // Store contribution from scatter ray.
         offsetRadiance = rayData.radiance;
+        offsetpdf = rayData.pdf;
+    }
+    float weight = 0.5f;
+
+    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f)
+    {
+        weight = 1.f;
+        offsetRadiance = float3(0.f);
     }
 
     float dx = length(basePoint[2] - basePoint[1]);
     float dy = length(basePoint[2] - offsetPoint);
-    jacobian *= (dot(offsetNormal, basePoint[2] - offsetPoint) / dot(baseNormal[2], basePoint[2] - basePoint[1])) * dx * dx / dy / dy;
+    jacobian *= (dot(baseNormal[2], basePoint[2] - offsetPoint) / dot(baseNormal[2], basePoint[2] - basePoint[1])) * dx * dx / dy / dy;
 
-    if (basepdf > 0.f && any(offsetRadiance > 0.f))
-        gOutputColor[pixel] = float4(offsetRadiance * jacobian / basepdf, 1.f);
+    float3 baseColor = float3(0.f);
+    float3 offsetColor = float3(0.f);
+
+    if (basepdf > 0.f)
+    {
+        baseColor = baseRadiance / basepdf;
+        offsetColor = offsetRadiance * jacobian / basepdf;
+    }
+    gOutputColor[pixel] = float4(baseColor - offsetColor, 1.f);
 
     // 4 is pdf
-    // if (offset.x == 1 && offset.y == 0)
-    //     gOutputGradientX[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
-    // if (offset.x == 0 && offset.y == 1)
-    //     gOutputGradientY[pixel] += 4 * 0.5 * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
-    // if (offset.x == -1 && offset.y == 0)
-    //     gOutputGradientX[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
-    // if (offset.x == 0 && offset.y == -1)
-    //     gOutputGradientY[pixel + offset] += 4 * 0.5 * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    if (offset.x == 1 && offset.y == 0)
+        gOutputGradientX[pixel] += 4 * weight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    if (offset.x == 0 && offset.y == 1)
+        gOutputGradientY[pixel] += 4 * weight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    if (offset.x == -1 && offset.y == 0)
+        gOutputGradientX[pixel + offset] += 4 * weight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    if (offset.x == 0 && offset.y == -1)
+        gOutputGradientY[pixel + offset] += 4 * weight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
 }
 
 //

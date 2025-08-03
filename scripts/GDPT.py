@@ -2,7 +2,7 @@ from falcor import *
 
 def render_graph_PathTracer():
     g = RenderGraph("PathTracer")
-    PathTracer = createPass("MinimalPathTracer", {'maxBounces': 1})
+    PathTracer = createPass("MinimalPathTracer", {'maxBounces': 5})
     g.addPass(PathTracer, "PathTracer")
     VBufferRT = createPass("VBufferRT", {'samplePattern': 'Stratified', 'sampleCount': 16, 'useAlphaTest': True})
     g.addPass(VBufferRT, "VBufferRT")
@@ -14,9 +14,9 @@ def render_graph_PathTracer():
     g.markOutput("AccumulatePass.output")
     g.markOutput("PathTracer.color")
 
-    AccumulatePassX = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single', 'maxFrameCount': 1024})
+    AccumulatePassX = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single'})
     g.addPass(AccumulatePassX, "AccumulatePassX")
-    AccumulatePassY = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single', 'maxFrameCount': 1024})
+    AccumulatePassY = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single'})
     g.addPass(AccumulatePassY, "AccumulatePassY")
     g.addEdge("PathTracer.gradientX", "AccumulatePassX.input")
     g.addEdge("PathTracer.gradientY", "AccumulatePassY.input")
