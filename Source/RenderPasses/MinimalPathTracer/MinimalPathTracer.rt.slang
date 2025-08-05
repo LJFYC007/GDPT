@@ -66,6 +66,9 @@ import Rendering.Lights.LightHelpers;
 
 cbuffer CB
 {
+    float3 gNormal;
+    float3 gPoint1;
+    float3 gPoint2;
     uint gFrameCount;    // Frame count since scene was loaded.
     uint gPRNGDimension; // First available PRNG dimension.
 }
@@ -113,6 +116,7 @@ struct ScatterRayData
     float3 direction; ///< Next path segment direction.
     bool offset;
     float3 nextPoint;
+    uint instanceID;
     float3 normal;
     float3 hitPoint;
 
@@ -130,6 +134,7 @@ struct ScatterRayData
         this.pdf = 1.f;
         this.offset = false;
         this.origin = float3(0, 0, 0);
+        this.normal = float3(1, 1, 1);
         this.direction = float3(0, 0, 0);
         this.sg = sg;
     }
@@ -146,6 +151,7 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
 {
     VertexData v = {};
     uint materialID = {};
+    uint instanceID = {};
 
 #if SCENE_HAS_GEOMETRY_TYPE(GEOMETRY_TYPE_TRIANGLE_MESH)
     if (hit.getType() == HitType::Triangle)
@@ -153,6 +159,7 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
         const TriangleHit triangleHit = hit.getTriangleHit();
         v = gScene.getVertexData(triangleHit);
         materialID = gScene.getMaterialID(triangleHit.instanceID);
+        instanceID = triangleHit.instanceID.index;
     }
 #endif
 #if SCENE_HAS_GEOMETRY_TYPE(GEOMETRY_TYPE_DISPLACED_TRIANGLE_MESH)
@@ -161,6 +168,7 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
         const DisplacedTriangleHit displacedTriangleHit = hit.getDisplacedTriangleHit();
         v = gScene.getVertexData(displacedTriangleHit, -rayDir);
         materialID = gScene.getMaterialID(displacedTriangleHit.instanceID);
+        instanceID = displacedTriangleHit.instanceID.index;
     }
 #endif
 #if SCENE_HAS_GEOMETRY_TYPE(GEOMETRY_TYPE_CURVE)
@@ -169,6 +177,7 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
         const CurveHit curveHit = hit.getCurveHit();
         v = gScene.getVertexDataFromCurve(curveHit);
         materialID = gScene.getMaterialID(curveHit.instanceID);
+        instanceID = curveHit.instanceID.index;
     }
 #endif
 #if SCENE_HAS_GEOMETRY_TYPE(GEOMETRY_TYPE_SDF_GRID)
@@ -177,10 +186,12 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
         const SDFGridHit sdfGridHit = hit.getSDFGridHit();
         v = gScene.getVertexDataFromSDFGrid(sdfGridHit, rayOrigin, rayDir);
         materialID = gScene.getMaterialID(sdfGridHit.instanceID);
+        instanceID = sdfGridHit.instanceID.index;
     }
 #endif
 
     ShadingData sd = gScene.materials.prepareShadingData(v, materialID, -rayDir);
+    sd.instanceID = instanceID;
 
     return sd;
 }
@@ -340,6 +351,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     ShadingData sd = loadShadingData(hit, rayData.origin, rayData.direction);
     rayData.hitPoint = sd.posW;
     rayData.normal = sd.frame.N;
+    rayData.instanceID = sd.instanceID;
 
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
@@ -409,12 +421,10 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     float3 baseRadiance = float3(0.f);
     float3 offsetRadiance = float3(0.f);
     float basepdf, offsetpdf;
-    uint baseLength;
     float3 basePoint[10], baseNormal[10];
-    float3 offsetPoint, offsetNormal;
+    uint instance[10];
+    float3 offsetPoint;
     float jacobian = 1.f;
-
-    bool stop = false;
 
     {
         const float3 primaryRayOrigin = gScene.camera.getPosition();
@@ -481,7 +491,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
             basePoint[depth + 2] = rayData.hitPoint;
             baseNormal[depth + 2] = rayData.normal;
-            baseLength = depth + 2;
+            instance[depth + 2] = rayData.instanceID;
         }
 
         // Store contribution from scatter ray.
@@ -496,7 +506,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     else if (gFrameCount % 4 == 1) offset = uint2(0, 1);
     else if (gFrameCount % 4 == 2) offset = uint2(-1, 0);
     else offset = uint2(0, -1);
-    // offset = uint2(0, 0);
+    // offset = uint2(1, 0);
 
     if (pixel.x + offset.x < 0) offset.x = -offset.x;
     if (pixel.y + offset.y < 0) offset.y = -offset.y;
@@ -553,12 +563,18 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         ScatterRayData rayData = ScatterRayData(sg);
         rayData.offset = true;
         rayData.nextPoint = basePoint[2];
+        rayData.instanceID = sd.instanceID;
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
             rayData.terminated = true;
 
         offsetPoint = sd.posW;
+        // if (rayData.instanceID == instance[2]) // If the ray hits the same instance, terminate it.
+        // {
+        //     rayData.terminated = true;
+        //     rayData.pdf = 0.f;
+        // }
 
         // Follow path into the scene and compute its total contribution.
         for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
@@ -567,12 +583,10 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             // direct illumination and generates the next scatter ray.
             rayData.nextPoint = basePoint[depth + 3];
             traceScatterRay(rayData);
-            // if (depth == 0)
-            //     offsetNormal = rayData.normal;
-            if (length(rayData.hitPoint - basePoint[depth + 2]) > 0.00001f)
+            if (rayData.instanceID != instance[depth + 2])
             {
                 rayData.terminated = true;
-                rayData.radiance = float3(0.f);
+                rayData.pdf = 0.f;
             }
         }
 
@@ -590,7 +604,12 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
     float dx = length(basePoint[2] - basePoint[1]);
     float dy = length(basePoint[2] - offsetPoint);
-    jacobian *= (dot(baseNormal[2], basePoint[2] - offsetPoint) / dot(baseNormal[2], basePoint[2] - basePoint[1])) * dx * dx / dy / dy;
+    float cos1 = dot(normalize(baseNormal[2]), normalize(basePoint[1] - basePoint[2]));
+    float cos2 = dot(normalize(baseNormal[2]), normalize(offsetPoint - basePoint[2]));
+    if (cos1 == 0.f)
+        return;
+    // jacobian *= (cos2 / cos1) * dx * dx / dy / dy;
+    jacobian *= abs(cos2 * dx * dx) / (FLT_EPSILON + abs(cos1 * dy * dy));
 
     float3 baseColor = float3(0.f);
     float3 offsetColor = float3(0.f);
@@ -598,9 +617,12 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     if (basepdf > 0.f)
     {
         baseColor = baseRadiance / basepdf;
-        offsetColor = offsetRadiance * jacobian / basepdf;
+        if (any(offsetRadiance > 0.f))
+            offsetColor = offsetRadiance * jacobian / basepdf;
     }
-    gOutputColor[pixel] = float4(baseColor - offsetColor, 1.f);
+    gOutputColor[pixel] = float4(baseColor, 1.f);
+    // gOutputGradientX[pixel] = float4(baseColor, 1.f);
+    // gOutputGradientY[pixel] = float4(offsetColor, 1.f);
 
     // 4 is pdf
     if (offset.x == 1 && offset.y == 0)

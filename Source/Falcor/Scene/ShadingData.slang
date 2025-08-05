@@ -64,6 +64,7 @@ struct ShadingData : IDifferentiable
     uint materialGradOffset;            ///< Offset to the material gradient in the gradient buffer.
     uint geometryGradOffset;            ///< Offset to the geometry gradient in the gradient buffer.
     uint threadID;                      ///< Thread ID for gradient aggregation with a hash grid.
+    uint instanceID;
 
 
     // Utility functions
