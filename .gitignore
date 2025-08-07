@@ -33,4 +33,4 @@
 *.swp
 
 output/
-*.exr
+result/

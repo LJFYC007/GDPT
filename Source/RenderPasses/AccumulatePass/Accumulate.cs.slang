@@ -62,6 +62,9 @@ typedef int4 InputDataType;
 
 Texture2D<InputDataType> gCurFrame;
 RWTexture2D<float4> gOutputFrame;
+RWTexture2D<float4> gVariance;
+RWTexture2D<float4> gMean;
+RWTexture2D<float4> gM2;
 
 // Last frame data, format depends on accumulation mode.
 RWTexture2D<float4> gLastFrameSum;  // If mode is Single or SingleKahan
@@ -102,6 +105,11 @@ void accumulateSingle(uint3 dispatchThreadId: SV_DispatchThreadID)
 
             gLastFrameSum[pixelPos] = sum;
         }
+
+        float4 delta = curColor - gMean[pixelPos];
+        gMean[pixelPos] += delta * curWeight;
+        gM2[pixelPos] += delta * (curColor - gMean[pixelPos]);
+        gVariance[pixelPos] = gM2[pixelPos] / (gAccumCount + 1);
     }
     else
     {

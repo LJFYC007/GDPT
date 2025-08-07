@@ -101,7 +101,7 @@ public:
 
 protected:
     void prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height);
-    void accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst);
+    void accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst, const ref<Texture>& pVariance);
 
     // Internal state
 
@@ -128,6 +128,9 @@ protected:
     ref<Texture> mpLastFrameSumLo;
     /// Last frame running sum (hi bits). Used in Double mode.
     ref<Texture> mpLastFrameSumHi;
+
+    ref<Texture> mpM2;
+    ref<Texture> mpMean;
 
     // UI variables
 

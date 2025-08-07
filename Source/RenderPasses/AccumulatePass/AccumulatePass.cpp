@@ -47,6 +47,7 @@ const char kShaderFile[] = "RenderPasses/AccumulatePass/Accumulate.cs.slang";
 
 const char kInputChannel[] = "input";
 const char kOutputChannel[] = "output";
+const char kVarianceChannel[] = "variance";
 
 // Serialized parameters
 const char kEnabled[] = "enabled";
@@ -121,6 +122,10 @@ RenderPassReflection AccumulatePass::reflect(const CompileData& compileData)
         .bindFlags(ResourceBindFlags::RenderTarget | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
         .format(fmt)
         .texture2D(sz.x, sz.y);
+    reflector.addOutput(kVarianceChannel, "Output variance that is temporally accumulated")
+        .bindFlags(ResourceBindFlags::RenderTarget | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
+        .format(fmt)
+        .texture2D(sz.x, sz.y);
     return reflector;
 }
 
@@ -173,6 +178,7 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
     // Grab our input/output buffers.
     ref<Texture> pSrc = renderData.getTexture(kInputChannel);
     ref<Texture> pDst = renderData.getTexture(kOutputChannel);
+    ref<Texture> pVariance = renderData.getTexture(kVarianceChannel);
     FALCOR_ASSERT(pSrc && pDst);
 
     const uint2 resolution = uint2(pSrc->getWidth(), pSrc->getHeight());
@@ -208,7 +214,7 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
     }
     else if (resolutionMatch)
     {
-        accumulate(pRenderContext, pSrc, pDst);
+        accumulate(pRenderContext, pSrc, pDst, pVariance);
     }
     else
     {
@@ -217,7 +223,7 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
     }
 }
 
-void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst)
+void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst, const ref<Texture>& pVariance)
 {
     FALCOR_ASSERT(pSrc && pDst);
     FALCOR_ASSERT(pSrc->getWidth() == mFrameDim.x && pSrc->getHeight() == mFrameDim.y);
@@ -269,6 +275,10 @@ void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture
     var["PerFrameCB"]["gMovingAverageMode"] = (mMaxFrameCount > 0);
     var["gCurFrame"] = pSrc;
     var["gOutputFrame"] = pDst;
+
+    var["gVariance"] = pVariance;
+    var["gMean"] = mpMean;
+    var["gM2"] = mpM2;
 
     // Bind accumulation buffers. Some of these may be nullptr's.
     var["gLastFrameSum"] = mpLastFrameSum;
@@ -413,4 +423,6 @@ void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t
     prepareBuffer(mpLastFrameCorr, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::SingleCompensated);
     prepareBuffer(mpLastFrameSumLo, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
     prepareBuffer(mpLastFrameSumHi, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
+    prepareBuffer(mpM2, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::Single);
+    prepareBuffer(mpMean, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::Single);
 }
