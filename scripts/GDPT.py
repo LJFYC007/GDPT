@@ -35,12 +35,12 @@ def render_graph_PathTracer():
     # g.markOutput("AccumulatePassX.output")
     # g.markOutput("AccumulatePassY.output")
 
-    ErrorMeasureXPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\minimal_result\\reference-gradientX.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Difference'})
+    ErrorMeasureXPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\minimal_result\\reference-gradientX.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
     g.addPass(ErrorMeasureXPass, "ErrorMeasureXPass")
     g.addEdge("AccumulatePassX.output", "ErrorMeasureXPass.Source")
     g.markOutput("ErrorMeasureXPass.Output")
 
-    ErrorMeasureYPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\minimal_result\\reference-gradientY.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Difference'})
+    ErrorMeasureYPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\minimal_result\\reference-gradientY.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
     g.addPass(ErrorMeasureYPass, "ErrorMeasureYPass")
     g.addEdge("AccumulatePassY.output", "ErrorMeasureYPass.Source")
     g.markOutput("ErrorMeasureYPass.Output")
@@ -51,6 +51,6 @@ PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-m.clock.exitFrame = 10000
+# m.clock.exitFrame = 1300
 m.frameCapture.outputDir = "../../../../output"
-m.frameCapture.addFrames(m.activeGraph, [9999])
+m.frameCapture.addFrames(m.activeGraph, [32, 64, 128, 1024])

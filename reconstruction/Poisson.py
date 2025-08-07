@@ -60,14 +60,14 @@ def poisson_reconstruct(grad_x, grad_y, I0):
     return result
 
 # it seems grad X Y is swapped, since H, W is swapped
-pt = cv2.imread("../result/pt-64spp.exr", cv2.IMREAD_UNCHANGED)
 
 # Process different SPP values for gradients
-spp_values = [32, 64, 1024]
+spp_values = [32, 64, 128, 1024]
 for spp in spp_values:
-    gradY = cv2.imread(f"../result/gradientX-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
-    gradX = cv2.imread(f"../result/gradientY-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
+    pt = cv2.imread(f"../minimal_result/pt-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
+    gradY = cv2.imread(f"../minimal_result/gradientX-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
+    gradX = cv2.imread(f"../minimal_result/gradientY-{spp}spp.exr", cv2.IMREAD_UNCHANGED)
 
     reconstructed = poisson_reconstruct(gradX, gradY, pt)
-    cv2.imwrite(f"../result/poisson-{spp}spp.exr", reconstructed.astype(np.float32))
-    print(f"Completed reconstruction with gradient {spp}spp and pt 64spp")
+    cv2.imwrite(f"../minimal_result/poisson-{spp}spp.exr", reconstructed.astype(np.float32))
+    print(f"Completed reconstruction with gradient {spp}spp and pt {spp}spp")

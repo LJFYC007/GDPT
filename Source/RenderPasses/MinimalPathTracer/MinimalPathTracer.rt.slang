@@ -594,32 +594,28 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         offsetRadiance = rayData.radiance;
         offsetpdf = rayData.pdf;
     }
-    float weight = 0.5f;
-
-    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f)
-    {
-        weight = 1.f;
-        offsetRadiance = float3(0.f);
-    }
 
     float dx = length(basePoint[2] - basePoint[1]);
     float dy = length(basePoint[2] - offsetPoint);
     float cos1 = dot(normalize(baseNormal[2]), normalize(basePoint[1] - basePoint[2]));
     float cos2 = dot(normalize(baseNormal[2]), normalize(offsetPoint - basePoint[2]));
-    if (cos1 == 0.f)
-        return;
     // jacobian *= (cos2 / cos1) * dx * dx / dy / dy;
     jacobian *= abs(cos2 * dx * dx) / (FLT_EPSILON + abs(cos1 * dy * dy));
 
+    float weight;
+    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f || cos1 == 0.f || cos2 == 0.f)
+    {
+        weight = 1.f;
+        offsetRadiance = float3(0.f);
+    }
+    else
+        weight = basepdf / (basepdf + offsetpdf * jacobian);
+
     float3 baseColor = float3(0.f);
     float3 offsetColor = float3(0.f);
-
-    if (basepdf > 0.f)
-    {
-        baseColor = baseRadiance / basepdf;
-        if (any(offsetRadiance > 0.f))
-            offsetColor = offsetRadiance * jacobian / basepdf;
-    }
+    baseColor = baseRadiance / basepdf;
+    if (any(offsetRadiance > 0.f))
+        offsetColor = offsetRadiance * jacobian / basepdf;
     gOutputColor[pixel] = float4(baseColor, 1.f);
     // gOutputGradientX[pixel] = float4(baseColor, 1.f);
     // gOutputGradientY[pixel] = float4(offsetColor, 1.f);

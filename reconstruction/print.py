@@ -3,10 +3,10 @@ os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2
 import numpy as np
 
-result_dir = "../result"
+result_dir = "../minimal_result"
 reference_file = "reference-staircase.exr"
 methods = ["pt", "simple", "poisson"]
-spp_values = [32, 64, 1024]
+spp_values = [32, 64, 128, 1024]
 
 def calculate_mse_and_save_difference(image1, image2, output_path):
     if image1.shape != image2.shape:
