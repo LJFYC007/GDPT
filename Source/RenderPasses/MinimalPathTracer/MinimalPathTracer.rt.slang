@@ -103,24 +103,26 @@ struct ShadowRayData
 };
 
 /**
- * Payload for scatter ray (up to 88B).
+ * Payload for scatter ray in gradient domain path tracing (up to 88B).
  */
 struct ScatterRayData
 {
-    float3 radiance;  ///< Accumulated outgoing radiance from path.
-    bool terminated;  ///< Set to true when path is terminated.
-    float3 thp;       ///< Current path throughput. This is updated at each path vertex.
-    uint pathLength;  ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
-    float3 origin;    ///< Next path segment origin.
-    float pdf;
-    float3 direction; ///< Next path segment direction.
-    bool offset;
-    float3 nextPoint;
-    uint instanceID;
-    float3 normal;
-    float3 hitPoint;
+    float3 radiance;        ///< Accumulated outgoing radiance from path.
+    bool terminated;        ///< Set to true when path is terminated.
+    float3 throughput;      ///< Current path throughput. This is updated at each path vertex.
+    uint pathLength;        ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
+    float3 origin;          ///< Next path segment origin.
+    float pdf;              ///< Path probability density function value.
+    float3 direction;       ///< Next path segment direction.
 
-    SampleGenerator sg; ///< Per-ray state for the sample generator (up to 16B).
+    // Gradient domain specific fields
+    bool isOffsetPath;      ///< True if this is an offset path for gradient computation.
+    float3 targetPoint;     ///< Target point for offset path connection.
+    uint instanceID;        ///< Instance ID of the hit geometry.
+    float3 normal;          ///< Surface normal at hit point.
+    float3 hitPoint;        ///< World space hit point position.
+
+    SampleGenerator sg;     ///< Per-ray state for the sample generator (up to 16B).
 
     /**
      * Initializes ray payload with default parameters.
@@ -130,9 +132,9 @@ struct ScatterRayData
         this.terminated = false;
         this.pathLength = 0;
         this.radiance = float3(0, 0, 0);
-        this.thp = float3(1, 1, 1);
+        this.throughput = float3(1, 1, 1);
         this.pdf = 1.f;
-        this.offset = false;
+        this.isOffsetPath = false;
         this.origin = float3(0, 0, 0);
         this.normal = float3(1, 1, 1);
         this.direction = float3(0, 0, 0);
@@ -306,7 +308,7 @@ float3 evalDirectAnalytic(const ShadingData sd, const IMaterialInstance mi, inou
 }
 
 /**
- * Generate a new scatter ray or terminate.
+ * Generate a new scatter ray or terminate for gradient domain path tracing.
  * @param[in] sd Shading data.
  * @param[in] mi Material instance.
  * @param[in] isCurveHit True if on curve hit.
@@ -318,17 +320,19 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
 {
     // Sample material.
     BSDFSample bsdfSample;
-    if (rayData.offset || mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
+    if (rayData.isOffsetPath || mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
     {
         rayData.origin = rayOrigin;
-        if (rayData.offset == true)
-            rayData.direction = normalize(rayData.nextPoint - rayData.origin);
+
+        // For offset paths in gradient domain, connect to the target point
+        if (rayData.isOffsetPath == true)
+            rayData.direction = normalize(rayData.targetPoint - rayData.origin);
         else
             rayData.direction = bsdfSample.wo;
 
-        rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
+        rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
         rayData.pdf *= mi.evalPdf(sd, rayData.direction);
-        return any(rayData.thp > 0.f);
+        return any(rayData.throughput > 0.f);
     }
 
     rayData.pdf = 0.f;
@@ -360,7 +364,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // Add emitted light.
     if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0) && any(mi.getProperties(sd).emission > 0.f))
     {
-        rayData.radiance = rayData.thp * mi.getProperties(sd).emission;
+        rayData.radiance = rayData.throughput * mi.getProperties(sd).emission;
         rayData.terminated = true;
         return;
     }
@@ -384,13 +388,6 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
         rayOrigin = sd.computeRayOrigin();
     }
 
-    // Add contribution of direct light from analytic lights.
-    // if (kUseAnalyticLights)
-    // {
-    //     float3 Lr = evalDirectAnalytic(sd, mi, rayData.sg);
-    //     rayData.radiance += rayData.thp * Lr;
-    // }
-
     // Generate scatter ray for the next path segment.
     // The raygen shader will continue the path based on the returned payload.
     if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
@@ -403,29 +400,26 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
 }
 
 /**
- * This is the main entry point for the minimal path tracer.
+ * This is the main entry point for the gradient domain path tracer.
  *
- * One path per pixel is generated, which is traced into the scene.
- * The path tracer is written as a for-loop over path segments.
- *
- * Built-in light sources (point, directional) are sampled explicitly at each
- * path vertex. The contributions from area lights (env map and mesh lights)
- * are explicitly added by the scatter ray hit/miss shaders.
+ * For each pixel, traces both a base path and offset paths to compute gradients.
+ * The base path follows standard path tracing, while offset paths are connected
+ * to corresponding vertices in the base path to estimate image gradients.
  *
  * @param[in] pixel Pixel to trace a path for.
  * @param[in] frameDim Dimension of the frame in pixels.
- * @return Returns the estimated color (radiance).
  */
 void tracePath(const uint2 pixel, const uint2 frameDim)
 {
     float3 baseRadiance = float3(0.f);
     float3 offsetRadiance = float3(0.f);
-    float basepdf, offsetpdf;
-    float3 basePoint[10], baseNormal[10];
-    uint instance[10];
-    float3 offsetPoint;
-    float jacobian = 1.f;
+    float basePdf, offsetPdf;
+    float3 basePathVertices[10], basePathNormals[10];
+    uint basePathInstanceIDs[10];
+    float3 offsetStartPoint;
+    float geometricJacobian = 1.f;
 
+    // Trace base path from the primary hit point
     {
         const float3 primaryRayOrigin = gScene.camera.getPosition();
         const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
@@ -462,62 +456,57 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             rayOrigin = sd.computeRayOrigin();
         }
 
-        // if (kComputeDirect)
-        // {
-        //     // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
-        //     outColor += mi.getProperties(sd).emission;
-
-        //     // Add contribution of direct light from analytic lights.
-        //     // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
-        //     outColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
-        // }
-
-        // Prepare ray payload.
-        ScatterRayData rayData = ScatterRayData(sg);
+        // Prepare ray payload for base path.
+        ScatterRayData baseRayData = ScatterRayData(sg);
 
         // Generate scatter ray.
-        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
-            rayData.terminated = true;
+        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, baseRayData))
+            baseRayData.terminated = true;
 
-        basePoint[1] = sd.posW;
-        baseNormal[1] = sd.frame.N;
+        // Store first vertex of base path
+        basePathVertices[1] = sd.posW;
+        basePathNormals[1] = sd.frame.N;
 
-        // Follow path into the scene and compute its total contribution.
-        for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
+        // Follow base path into the scene and compute its total contribution.
+        for (uint depth = 0; depth <= kMaxBounces && !baseRayData.terminated; depth++)
         {
             // Trace scatter ray. If it hits geometry, the closest hit shader samples
             // direct illumination and generates the next scatter ray.
-            traceScatterRay(rayData);
+            traceScatterRay(baseRayData);
 
-            basePoint[depth + 2] = rayData.hitPoint;
-            baseNormal[depth + 2] = rayData.normal;
-            instance[depth + 2] = rayData.instanceID;
+            basePathVertices[depth + 2] = baseRayData.hitPoint;
+            basePathNormals[depth + 2] = baseRayData.normal;
+            basePathInstanceIDs[depth + 2] = baseRayData.instanceID;
         }
 
-        // Store contribution from scatter ray.
-        baseRadiance = rayData.radiance;
-        basepdf = rayData.pdf;
+        // Store contribution from base path.
+        baseRadiance = baseRayData.radiance;
+        basePdf = baseRayData.pdf;
     }
-    if (!any(baseRadiance > 0.f) || basepdf == 0.f)
+
+    // Early exit if base path has no contribution
+    if (!any(baseRadiance > 0.f) || basePdf == 0.f)
         return;
 
-    uint2 offset;
-    if (gFrameCount % 4 == 0) offset = uint2(1, 0);
-    else if (gFrameCount % 4 == 1) offset = uint2(0, 1);
-    else if (gFrameCount % 4 == 2) offset = uint2(-1, 0);
-    else offset = uint2(0, -1);
-    // offset = uint2(1, 0);
+    // Determine offset direction for gradient estimation (cycles through 4 directions)
+    uint2 pixelOffset;
+    if (gFrameCount % 4 == 0) pixelOffset = uint2(1, 0);
+    else if (gFrameCount % 4 == 1) pixelOffset = uint2(0, 1);
+    else if (gFrameCount % 4 == 2) pixelOffset = uint2(-1, 0);
+    else pixelOffset = uint2(0, -1);
 
-    if (pixel.x + offset.x < 0) offset.x = -offset.x;
-    if (pixel.y + offset.y < 0) offset.y = -offset.y;
-    if (pixel.x + offset.x >= frameDim.x) offset.x = -offset.x;
-    if (pixel.y + offset.y >= frameDim.y) offset.y = -offset.y;
+    // Clamp offset pixel to frame boundaries
+    if (pixel.x + pixelOffset.x < 0) pixelOffset.x = -pixelOffset.x;
+    if (pixel.y + pixelOffset.y < 0) pixelOffset.y = -pixelOffset.y;
+    if (pixel.x + pixelOffset.x >= frameDim.x) pixelOffset.x = -pixelOffset.x;
+    if (pixel.y + pixelOffset.y >= frameDim.y) pixelOffset.y = -pixelOffset.y;
 
+    // Trace offset path for gradient computation
     {
         const float3 primaryRayOrigin = gScene.camera.getPosition();
-        const float3 primaryRayDir = getPrimaryRayDir(pixel + offset, frameDim, gScene.camera);
+        const float3 primaryRayDir = getPrimaryRayDir(pixel + pixelOffset, frameDim, gScene.camera);
 
-        const HitInfo hit = HitInfo(gVBuffer[pixel + offset]);
+        const HitInfo hit = HitInfo(gVBuffer[pixel + pixelOffset]);
         // Pixel represents a valid primary hit. Compute its contribution.
 
         const bool isCurveHit = hit.getType() == HitType::Curve;
@@ -549,86 +538,75 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             rayOrigin = sd.computeRayOrigin();
         }
 
-        // if (kComputeDirect)
-        // {
-        //     // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
-        //     offsetColor += mi.getProperties(sd).emission;
-
-        //     // Add contribution of direct light from analytic lights.
-        //     // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
-        //     offsetColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
-        // }
-
-        // Prepare ray payload.
-        ScatterRayData rayData = ScatterRayData(sg);
-        rayData.offset = true;
-        rayData.nextPoint = basePoint[2];
-        rayData.instanceID = sd.instanceID;
+        // Prepare ray payload for offset path.
+        ScatterRayData offsetRayData = ScatterRayData(sg);
+        offsetRayData.isOffsetPath = true;
+        offsetRayData.targetPoint = basePathVertices[2];  // Connect to first bounce of base path
+        offsetRayData.instanceID = sd.instanceID;
 
         // Generate scatter ray.
-        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
-            rayData.terminated = true;
+        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, offsetRayData))
+            offsetRayData.terminated = true;
 
-        offsetPoint = sd.posW;
-        // if (rayData.instanceID == instance[2]) // If the ray hits the same instance, terminate it.
-        // {
-        //     rayData.terminated = true;
-        //     rayData.pdf = 0.f;
-        // }
+        offsetStartPoint = sd.posW;
 
-        // Follow path into the scene and compute its total contribution.
-        for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
+        // Follow offset path into the scene with connection to base path vertices
+        for (uint depth = 0; depth <= kMaxBounces && !offsetRayData.terminated; depth++)
         {
-            // Trace scatter ray. If it hits geometry, the closest hit shader samples
-            // direct illumination and generates the next scatter ray.
-            rayData.nextPoint = basePoint[depth + 3];
-            traceScatterRay(rayData);
-            if (rayData.instanceID != instance[depth + 2])
+            // Set next target point for offset path connection
+            offsetRayData.targetPoint = basePathVertices[depth + 3];
+            traceScatterRay(offsetRayData);
+
+            // Terminate if hit different geometry instance (path diverged)
+            if (offsetRayData.instanceID != basePathInstanceIDs[depth + 2])
             {
-                rayData.terminated = true;
-                rayData.pdf = 0.f;
+                offsetRayData.terminated = true;
+                offsetRayData.pdf = 0.f;
             }
         }
 
-        // Store contribution from scatter ray.
-        offsetRadiance = rayData.radiance;
-        offsetpdf = rayData.pdf;
+        // Store contribution from offset path.
+        offsetRadiance = offsetRayData.radiance;
+        offsetPdf = offsetRayData.pdf;
     }
 
-    float dx = length(basePoint[2] - basePoint[1]);
-    float dy = length(basePoint[2] - offsetPoint);
-    float cos1 = dot(normalize(baseNormal[2]), normalize(basePoint[1] - basePoint[2]));
-    float cos2 = dot(normalize(baseNormal[2]), normalize(offsetPoint - basePoint[2]));
-    // jacobian *= (cos2 / cos1) * dx * dx / dy / dy;
-    jacobian *= abs(cos2 * dx * dx) / (FLT_EPSILON + abs(cos1 * dy * dy));
+    // Compute geometric Jacobian for gradient domain path tracing
+    float baseDist = length(basePathVertices[2] - basePathVertices[1]);
+    float offsetDist = length(basePathVertices[2] - offsetStartPoint);
+    float baseCosine = dot(normalize(basePathNormals[2]), normalize(basePathVertices[1] - basePathVertices[2]));
+    float offsetCosine = dot(normalize(basePathNormals[2]), normalize(offsetStartPoint - basePathVertices[2]));
+    geometricJacobian *= abs(offsetCosine * baseDist * baseDist) / (FLT_EPSILON + abs(baseCosine * offsetDist * offsetDist));
 
-    float weight;
-    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f || cos1 == 0.f || cos2 == 0.f)
+    // Compute importance weight for gradient estimation
+    float gradientWeight;
+    if (!any(offsetRadiance > 0.f) || offsetPdf == 0.f || baseCosine == 0.f || offsetCosine == 0.f)
     {
-        weight = 1.f;
+        gradientWeight = 1.f;
         offsetRadiance = float3(0.f);
     }
     else
-        weight = basepdf / (basepdf + offsetpdf * jacobian);
+        gradientWeight = basePdf / (basePdf + offsetPdf * geometricJacobian);
 
+    // Compute final colors
     float3 baseColor = float3(0.f);
     float3 offsetColor = float3(0.f);
-    baseColor = baseRadiance / basepdf;
+    baseColor = baseRadiance / basePdf;
     if (any(offsetRadiance > 0.f))
-        offsetColor = offsetRadiance * jacobian / basepdf;
-    gOutputColor[pixel] = float4(baseColor, 1.f);
-    // gOutputGradientX[pixel] = float4(baseColor, 1.f);
-    // gOutputGradientY[pixel] = float4(offsetColor, 1.f);
+        offsetColor = offsetRadiance * geometricJacobian / basePdf;
 
-    // 4 is pdf
-    if (offset.x == 1 && offset.y == 0)
-        gOutputGradientX[pixel] += 4 * weight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
-    if (offset.x == 0 && offset.y == 1)
-        gOutputGradientY[pixel] += 4 * weight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
-    if (offset.x == -1 && offset.y == 0)
-        gOutputGradientX[pixel + offset] += 4 * weight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
-    if (offset.x == 0 && offset.y == -1)
-        gOutputGradientY[pixel + offset] += 4 * weight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    // Output base color
+    gOutputColor[pixel] = float4(baseColor, 1.f);
+
+    // Output gradients based on offset direction
+    // Scale factor of 4 accounts for the fact that we only compute gradients 1/4 of the time
+    if (pixelOffset.x == 1 && pixelOffset.y == 0)
+        gOutputGradientX[pixel] += 4 * gradientWeight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    if (pixelOffset.x == 0 && pixelOffset.y == 1)
+        gOutputGradientY[pixel] += 4 * gradientWeight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+    if (pixelOffset.x == -1 && pixelOffset.y == 0)
+        gOutputGradientX[pixel + pixelOffset] += 4 * gradientWeight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+    if (pixelOffset.x == 0 && pixelOffset.y == -1)
+        gOutputGradientY[pixel + pixelOffset] += 4 * gradientWeight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
 }
 
 //
