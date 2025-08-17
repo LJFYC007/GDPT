@@ -316,6 +316,9 @@ float3 evalDirectAnalytic(const ShadingData sd, const IMaterialInstance mi, inou
  */
 bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool isCurveHit, float3 rayOrigin, inout ScatterRayData rayData)
 {
+    if (rayData.terminated)
+        return false;
+
     // Sample material.
     BSDFSample bsdfSample;
     bool isReconnect = (rayData.flag & 1) == 1;
@@ -370,7 +373,20 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod);
-    rayData.flag |= (mi.getProperties(sd).roughness > 0.03f) << 1;
+    bool isOffsetPath = bool(rayData.flag & 4);
+    bool isReconnectable = mi.getProperties(sd).roughness > 0.03f;
+    if (!isOffsetPath)
+        rayData.flag = (rayData.flag & ~(1u << 1)) | (isReconnectable << 1);
+    else if ((rayData.flag & 1) == 0) // If not reconnecting
+    {
+        if ((rayData.flag & 2) != (isReconnectable << 1))
+        {
+            rayData.terminated = true;
+            return;
+        }
+        if (isReconnectable && ((rayData.flag >> 3) & 1) == 1)
+            rayData.flag |= 1;
+    }
 
     // Add emitted light.
     if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0) && any(mi.getProperties(sd).emission > 0.f))
@@ -441,7 +457,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     uint instance[10];
     float3 offsetPoint;
     float jacobian = 1.f;
-    uint reconnectDepth = 0;
+    uint reconnectDepth = 0, baseLength = 0, offsetLength = 0;
 
     {
         const float3 primaryRayOrigin = gScene.camera.getPosition();
@@ -508,12 +524,13 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             basePoint[depth + 2] = rayData.hitPoint;
             baseNormal[depth + 2] = rayData.normal;
             instance[depth + 2] = rayData.instanceID;
-            reconnectable[depth + 2] = rayData.flag & 2;
+            reconnectable[depth + 2] = bool(rayData.flag & 2);
         }
 
         // Store contribution from scatter ray.
         baseRadiance = rayData.radiance;
         basepdf = rayData.pdf;
+        baseLength = rayData.pathLength;
     }
     if (!any(baseRadiance > 0.f) || basepdf == 0.f)
         return;
@@ -570,9 +587,15 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         ScatterRayData rayData = ScatterRayData(sg);
         rayData.nextPoint = basePoint[2];
         rayData.instanceID = sd.instanceID;
-        if (reconnectable[1] == true && reconnectable[2] == true && mi.getProperties(sd).roughness > 0.03f)
+        rayData.flag |= 1u << 2;
+
+        bool isReconnectable = mi.getProperties(sd).roughness > 0.03f;
+        // If the reconnectability changed, we skip this offset path.
+        if (reconnectable[1] != isReconnectable)
+            rayData.terminated = true;
+        if (isReconnectable && reconnectable[2] == true)
         {
-            rayData.flag |= 1; // Set reconnect flag.
+            rayData.flag |= 1;
             reconnectDepth = 1;
             offsetPoint = sd.posW;
         }
@@ -587,6 +610,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             rayData.radiance = mi.getProperties(sd).emission;
             rayData.pdf = 1.f;
             rayData.terminated = true;
+            reconnectDepth = 0;
         }
 
         // Follow path into the scene and compute its total contribution.
@@ -595,16 +619,17 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             // Trace scatter ray. If it hits geometry, the closest hit shader samples
             // direct illumination and generates the next scatter ray.
             rayData.nextPoint = basePoint[depth + 3];
+            rayData.flag = (rayData.flag & ~(1u << 1)) | (reconnectable[depth + 2] << 1);
+            rayData.flag = (rayData.flag & ~(1u << 3)) | (reconnectable[depth + 3] << 3);
+
             traceScatterRay(rayData);
             if (rayData.instanceID != instance[depth + 2])
             {
                 rayData.terminated = true;
                 rayData.pdf = 0.f;
             }
-
-            if (reconnectable[depth + 2] == true && reconnectable[depth + 3] == true && mi.getProperties(sd).roughness > 0.03f)
+            if (reconnectDepth == 0 && (rayData.flag & 1) == 1)
             {
-                rayData.flag |= 1; // Set reconnect flag.
                 reconnectDepth = depth + 2;
                 offsetPoint = rayData.hitPoint;
             }
@@ -613,6 +638,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         // Store contribution from scatter ray.
         offsetRadiance = rayData.radiance;
         offsetpdf = rayData.pdf;
+        offsetLength = rayData.pathLength;
     }
 
     float weight;
@@ -627,7 +653,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             offsetRadiance = float3(0.f);
     }
 
-    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f)
+    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f || baseLength != offsetLength)
     {
         weight = 1.f;
         offsetRadiance = float3(0.f);
