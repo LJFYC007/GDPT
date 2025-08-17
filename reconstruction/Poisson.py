@@ -64,9 +64,9 @@ def poisson_reconstruct(grad_x, grad_y, I0):
 # Process different SPP values for gradients
 spp_values = [32, 64, 128, 1024, 50000]
 for spp in spp_values:
-    pt = cv2.imread(f"../minimal_result/pt-{spp}.exr", cv2.IMREAD_UNCHANGED)
-    gradY = cv2.imread(f"../minimal_result/gradientX-{spp}.exr", cv2.IMREAD_UNCHANGED)
-    gradX = cv2.imread(f"../minimal_result/gradientY-{spp}.exr", cv2.IMREAD_UNCHANGED)
+    pt = cv2.imread(f"../output/Mogwai.AccumulatePass.output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+    gradY = cv2.imread(f"../output/Mogwai.ErrorMeasureXPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+    gradX = cv2.imread(f"../output/Mogwai.ErrorMeasureYPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
 
     reconstructed = poisson_reconstruct(gradX, gradY, pt)
     cv2.imwrite(f"../minimal_result/poisson-{spp}.exr", reconstructed.astype(np.float32))

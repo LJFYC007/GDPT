@@ -55,4 +55,4 @@ except NameError: None
 
 # m.clock.exitFrame = 1300
 m.frameCapture.outputDir = "../../../../output"
-m.frameCapture.addFrames(m.activeGraph, [32, 64, 128, 1024])
+m.frameCapture.addFrames(m.activeGraph, [32, 64, 128, 1024, 50000])

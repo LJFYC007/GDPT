@@ -13,7 +13,7 @@ def calculate_mse_and_save_difference(image1, image2, output_path):
         raise ValueError(f"Image shape mismatch: {image1.shape} vs {image2.shape}")
     difference = np.abs(image1.astype(np.float32) - image2.astype(np.float32))
     mse = np.mean((image1.astype(np.float32) - image2.astype(np.float32)) ** 2)
-    cv2.imwrite(output_path, difference)
+    # cv2.imwrite(output_path, difference)
     return mse
 
 def compare_images_with_reference():
