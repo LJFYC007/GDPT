@@ -114,7 +114,7 @@ struct ScatterRayData
     float3 origin;    ///< Next path segment origin.
     float pdf;
     float3 direction; ///< Next path segment direction.
-    bool offset;
+    uint flag;        /// flag & 1 means is reconnect path, flag & 2 means the shader point is reconnectable.
     float3 nextPoint;
     uint instanceID;
     float3 normal;
@@ -132,7 +132,7 @@ struct ScatterRayData
         this.radiance = float3(0, 0, 0);
         this.thp = float3(1, 1, 1);
         this.pdf = 1.f;
-        this.offset = false;
+        this.flag = 0;
         this.origin = float3(0, 0, 0);
         this.normal = float3(1, 1, 1);
         this.direction = float3(0, 0, 0);
@@ -318,16 +318,30 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
 {
     // Sample material.
     BSDFSample bsdfSample;
-    if (rayData.offset || mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
+    bool isReconnect = (rayData.flag & 1) == 1;
+    if (isReconnect || mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
     {
         rayData.origin = rayOrigin;
-        if (rayData.offset == true)
-            rayData.direction = normalize(rayData.nextPoint - rayData.origin);
-        else
-            rayData.direction = bsdfSample.wo;
+        if (!isCurveHit && bsdfSample.isLobe(LobeType::Transmission))
+            rayData.origin = sd.computeRayOrigin(false);
 
-        rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
-        rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+        if (isReconnect)
+        {
+            rayData.direction = normalize(rayData.nextPoint - rayData.origin);
+            rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
+            rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+        }
+        else
+        {
+            rayData.direction = bsdfSample.wo;
+            // If deltaReflection or deltaTransmission, the pdf is zero
+            if (bsdfSample.pdf == 0.f) rayData.thp *= bsdfSample.weight;
+            else
+            {
+                rayData.thp *= mi.eval(sd, rayData.direction, rayData.sg);
+                rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+            }
+        }
         return any(rayData.thp > 0.f);
     }
 
@@ -356,6 +370,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod);
+    rayData.flag |= (mi.getProperties(sd).roughness > 0.03f) << 1;
 
     // Add emitted light.
     if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0) && any(mi.getProperties(sd).emission > 0.f))
@@ -422,9 +437,11 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     float3 offsetRadiance = float3(0.f);
     float basepdf, offsetpdf;
     float3 basePoint[10], baseNormal[10];
+    bool reconnectable[10] = { false };
     uint instance[10];
     float3 offsetPoint;
     float jacobian = 1.f;
+    uint reconnectDepth = 0;
 
     {
         const float3 primaryRayOrigin = gScene.camera.getPosition();
@@ -462,16 +479,6 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             rayOrigin = sd.computeRayOrigin();
         }
 
-        // if (kComputeDirect)
-        // {
-        //     // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
-        //     outColor += mi.getProperties(sd).emission;
-
-        //     // Add contribution of direct light from analytic lights.
-        //     // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
-        //     outColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
-        // }
-
         // Prepare ray payload.
         ScatterRayData rayData = ScatterRayData(sg);
 
@@ -479,8 +486,17 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
             rayData.terminated = true;
 
+        if (kComputeDirect && any(mi.getProperties(sd).emission > 0.f))
+        {
+            // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
+            rayData.radiance = mi.getProperties(sd).emission;
+            rayData.pdf = 1.f;
+            rayData.terminated = true;
+        }
+
         basePoint[1] = sd.posW;
         baseNormal[1] = sd.frame.N;
+        reconnectable[1] = mi.getProperties(sd).roughness > 0.03f;
 
         // Follow path into the scene and compute its total contribution.
         for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
@@ -492,6 +508,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             basePoint[depth + 2] = rayData.hitPoint;
             baseNormal[depth + 2] = rayData.normal;
             instance[depth + 2] = rayData.instanceID;
+            reconnectable[depth + 2] = rayData.flag & 2;
         }
 
         // Store contribution from scatter ray.
@@ -549,32 +566,28 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             rayOrigin = sd.computeRayOrigin();
         }
 
-        // if (kComputeDirect)
-        // {
-        //     // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
-        //     offsetColor += mi.getProperties(sd).emission;
-
-        //     // Add contribution of direct light from analytic lights.
-        //     // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
-        //     offsetColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
-        // }
-
         // Prepare ray payload.
         ScatterRayData rayData = ScatterRayData(sg);
-        rayData.offset = true;
         rayData.nextPoint = basePoint[2];
         rayData.instanceID = sd.instanceID;
+        if (reconnectable[1] == true && reconnectable[2] == true && mi.getProperties(sd).roughness > 0.03f)
+        {
+            rayData.flag |= 1; // Set reconnect flag.
+            reconnectDepth = 1;
+            offsetPoint = sd.posW;
+        }
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
             rayData.terminated = true;
 
-        offsetPoint = sd.posW;
-        // if (rayData.instanceID == instance[2]) // If the ray hits the same instance, terminate it.
-        // {
-        //     rayData.terminated = true;
-        //     rayData.pdf = 0.f;
-        // }
+        if (kComputeDirect && any(mi.getProperties(sd).emission > 0.f))
+        {
+            // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
+            rayData.radiance = mi.getProperties(sd).emission;
+            rayData.pdf = 1.f;
+            rayData.terminated = true;
+        }
 
         // Follow path into the scene and compute its total contribution.
         for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
@@ -588,6 +601,13 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
                 rayData.terminated = true;
                 rayData.pdf = 0.f;
             }
+
+            if (reconnectable[depth + 2] == true && reconnectable[depth + 3] == true && mi.getProperties(sd).roughness > 0.03f)
+            {
+                rayData.flag |= 1; // Set reconnect flag.
+                reconnectDepth = depth + 2;
+                offsetPoint = rayData.hitPoint;
+            }
         }
 
         // Store contribution from scatter ray.
@@ -595,15 +615,19 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         offsetpdf = rayData.pdf;
     }
 
-    float dx = length(basePoint[2] - basePoint[1]);
-    float dy = length(basePoint[2] - offsetPoint);
-    float cos1 = dot(normalize(baseNormal[2]), normalize(basePoint[1] - basePoint[2]));
-    float cos2 = dot(normalize(baseNormal[2]), normalize(offsetPoint - basePoint[2]));
-    // jacobian *= (cos2 / cos1) * dx * dx / dy / dy;
-    jacobian *= abs(cos2 * dx * dx) / (FLT_EPSILON + abs(cos1 * dy * dy));
-
     float weight;
-    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f || cos1 == 0.f || cos2 == 0.f)
+    if (reconnectDepth > 0)
+    {
+        float dx = length(basePoint[reconnectDepth + 1] - basePoint[reconnectDepth]);
+        float dy = length(basePoint[reconnectDepth + 1] - offsetPoint);
+        float cos1 = dot(normalize(baseNormal[reconnectDepth + 1]), normalize(basePoint[reconnectDepth] - basePoint[reconnectDepth + 1]));
+        float cos2 = dot(normalize(baseNormal[reconnectDepth + 1]), normalize(offsetPoint - basePoint[reconnectDepth + 1]));
+        jacobian *= abs(cos2 * dx * dx) / (FLT_EPSILON + abs(cos1 * dy * dy));
+        if (cos1 == 0.f || cos2 == 0.f)
+            offsetRadiance = float3(0.f);
+    }
+
+    if (!any(offsetRadiance > 0.f) || offsetpdf == 0.f)
     {
         weight = 1.f;
         offsetRadiance = float3(0.f);
