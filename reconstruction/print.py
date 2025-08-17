@@ -6,7 +6,7 @@ import numpy as np
 result_dir = "../minimal_result"
 reference_file = "reference-staircase.exr"
 methods = ["pt", "simple", "poisson"]
-spp_values = [32, 64, 128, 1024]
+spp_values = [32, 64, 128, 1024, 50000]
 
 def calculate_mse_and_save_difference(image1, image2, output_path):
     if image1.shape != image2.shape:
@@ -28,7 +28,7 @@ def compare_images_with_reference():
     for method in methods:
         mse_results[method] = {}
         for spp in spp_values:
-            input_file = f"{method}-{spp}spp.exr"
+            input_file = f"{method}-{spp}.exr"
             input_path = os.path.join(result_dir, input_file)
             input_img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
 
