@@ -5,7 +5,7 @@ import numpy as np
 
 result_dir = "../minimal_result"
 reference_file = "reference-staircase.exr"
-methods = ["pt", "simple", "poisson"]
+methods = ["pt", "simple", "poisson", "generalized-poisson"]
 spp_values = [32, 64, 128, 1024, 50000]
 
 def calculate_mse_and_save_difference(image1, image2, output_path):

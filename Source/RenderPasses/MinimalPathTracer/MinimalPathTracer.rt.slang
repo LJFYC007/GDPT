@@ -323,15 +323,26 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
     if (rayData.isOffsetPath || mi.sample(sd, rayData.sg, bsdfSample, kUseImportanceSampling))
     {
         rayData.origin = rayOrigin;
+        if (!isCurveHit && bsdfSample.isLobe(LobeType::Transmission))
+            rayData.origin = sd.computeRayOrigin(false);
 
-        // For offset paths in gradient domain, connect to the target point
-        if (rayData.isOffsetPath == true)
+        if (rayData.isOffsetPath)
+        {
             rayData.direction = normalize(rayData.targetPoint - rayData.origin);
+            rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
+            rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+        }
         else
+        {
             rayData.direction = bsdfSample.wo;
-
-        rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
-        rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+            // If deltaReflection or deltaTransmission, the pdf is zero
+            if (bsdfSample.pdf == 0.f) rayData.throughput *= bsdfSample.weight;
+            else
+            {
+                rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
+                rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+            }
+        }
         return any(rayData.throughput > 0.f);
     }
 
