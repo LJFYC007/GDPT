@@ -63,6 +63,8 @@ import Utils.Math.MathHelpers;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Sampling.SampleGenerator;
 import Rendering.Lights.LightHelpers;
+import Rendering.Lights.EmissiveLightSampler;
+import Rendering.Lights.EmissiveLightSamplerHelpers;
 
 cbuffer CB
 {
@@ -71,6 +73,7 @@ cbuffer CB
     float3 gPoint2;
     uint gFrameCount;    // Frame count since scene was loaded.
     uint gPRNGDimension; // First available PRNG dimension.
+    EmissiveLightSampler emissiveSampler;
 }
 
 // Inputs
@@ -264,6 +267,21 @@ void traceScatterRay(inout ScatterRayData rayData)
     TraceRay(gScene.rtAccel, rayFlags, 0xff /* instanceInclusionMask */, 0 /* hitIdx */, rayTypeCount, 0 /* missIdx */, ray, rayData);
 }
 
+/** Evaluates the currently configured heuristic for multiple importance sampling (MIS).
+    \param[in] n0 Number of samples taken from the first sampling strategy.
+    \param[in] p0 Pdf for the first sampling strategy.
+    \param[in] n1 Number of samples taken from the second sampling strategy.
+    \param[in] p1 Pdf for the second sampling strategy.
+    \return Weight for the contribution from the first strategy (p0).
+*/
+float evalMIS(float n0, float p0, float n1, float p1)
+{
+    // Power two heuristic
+    float q0 = (n0 * p0) * (n0 * p0);
+    float q1 = (n1 * p1) * (n1 * p1);
+    return q0 / (q0 + q1);
+}
+
 /**
  * Evaluates the direct illumination from analytic lights.
  * This function samples Falcor's light list uniformly with one shadow ray.
@@ -272,39 +290,32 @@ void traceScatterRay(inout ScatterRayData rayData)
  * @param[in,out] sg SampleGenerator object.
  * @return Outgoing radiance in view direction.
  */
-float3 evalDirectAnalytic(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg)
+float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg)
 {
-    const uint lightCount = gScene.getLightCount();
-    if (lightCount == 0)
-        return float3(0.f);
-
-    // Pick one of the analytic light sources randomly with equal probability.
-    const uint lightIndex = min(uint(sampleNext1D(sg) * lightCount), lightCount - 1);
-    float invPdf = lightCount; // Light selection pdf = 1.0 / lightCount.
-
-    // Sample local light source.
-    AnalyticLightSample ls;
-    if (!sampleLight(sd.posW, gScene.getLight(lightIndex), sg, ls))
+    TriangleLightSample tls;
+    if (!emissiveSampler.sampleLight(sd.posW, sd.faceN, false, sg, tls))
         return float3(0.f);
 
     // Reject sample if not in the hemisphere of a BSDF lobe.
     const uint lobeTypes = mi.getLobeTypes(sd);
     const bool hasReflection = lobeTypes & uint(LobeType::Reflection);
     const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
-    float NdotL = dot(sd.getOrientedFaceNormal(), ls.dir);
+    float NdotL = dot(sd.getOrientedFaceNormal(), tls.dir);
     if ((NdotL <= kMinCosTheta && !hasTransmission) || (NdotL >= -kMinCosTheta && !hasReflection))
         return float3(0.f);
 
     // Get origin with offset applied in direction of the geometry normal to avoid self-intersection.
-    const float3 origin = computeRayOrigin(sd.posW, dot(sd.faceN, ls.dir) >= 0.f ? sd.faceN : -sd.faceN);
+    const float3 origin = computeRayOrigin(sd.posW, dot(sd.faceN, tls.dir) >= 0.f ? sd.faceN : -sd.faceN);
+    float3 lightPos = computeRayOrigin(tls.posW, tls.normalW);
+    float3 toLight = lightPos - origin;
 
     // Test visibility by tracing a shadow ray.
-    bool V = traceShadowRay(origin, ls.dir, ls.distance);
+    bool V = traceShadowRay(origin, normalize(toLight), length(toLight));
     if (!V)
         return float3(0.f);
 
     // Evaluate contribution.
-    return mi.eval(sd, ls.dir, sg) * ls.Li * invPdf;
+    return mi.eval(sd, tls.dir, sg) * tls.Le / tls.pdf;
 }
 
 /**
@@ -372,10 +383,10 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod);
 
-    // Add emitted light.
-    if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0) && any(mi.getProperties(sd).emission > 0.f))
+    // If the material is emissive, we accumulate it only on the first bounce, since we enabled NEE.
+    if (kUseEmissiveLights && any(mi.getProperties(sd).emission > 0.f))
     {
-        rayData.radiance = rayData.throughput * mi.getProperties(sd).emission;
+        // rayData.radiance += rayData.throughput * mi.getProperties(sd).emission / rayData.pdf;
         rayData.terminated = true;
         return;
     }
@@ -397,6 +408,12 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     else
     {
         rayOrigin = sd.computeRayOrigin();
+    }
+
+    // Here we implement the NEE
+    {
+        float3 Lr = evalDirectEmissive(sd, mi, rayData.sg);
+        rayData.radiance += rayData.throughput * Lr / rayData.pdf;
     }
 
     // Generate scatter ray for the next path segment.
@@ -470,6 +487,12 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         // Prepare ray payload for base path.
         ScatterRayData baseRayData = ScatterRayData(sg);
 
+        // Here we implement the NEE
+        {
+            float3 Lr = evalDirectEmissive(sd, mi, baseRayData.sg);
+            baseRayData.radiance += baseRayData.throughput * Lr / baseRayData.pdf;
+        }
+
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, baseRayData))
             baseRayData.terminated = true;
@@ -496,8 +519,8 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     }
 
     // Early exit if base path has no contribution
-    if (!any(baseRadiance > 0.f) || basePdf == 0.f)
-        return;
+    // if (!any(baseRadiance > 0.f) || basePdf == 0.f)
+    //     return;
 
     // Determine offset direction for gradient estimation (cycles through 4 directions)
     uint2 pixelOffset;
@@ -601,7 +624,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     // Compute final colors
     float3 baseColor = float3(0.f);
     float3 offsetColor = float3(0.f);
-    baseColor = baseRadiance / basePdf;
+    baseColor = baseRadiance; // / basePdf;
     if (any(offsetRadiance > 0.f))
         offsetColor = offsetRadiance * geometricJacobian / basePdf;
 

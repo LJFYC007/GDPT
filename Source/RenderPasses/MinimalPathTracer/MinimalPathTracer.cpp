@@ -139,7 +139,25 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
     // Request the light collection if emissive lights are enabled.
     if (mpScene->getRenderSettings().useEmissiveLights)
     {
-        mpScene->getLightCollection(pRenderContext);
+        mpScene->getILightCollection(pRenderContext);
+    }
+
+    if (mpScene->useEmissiveLights())
+    {
+        // Create emissive light sampler if needed
+        if (!mpEmissiveSampler)
+        {
+            const auto& pLights = mpScene->getILightCollection(pRenderContext);
+            if (pLights && pLights->getActiveLightCount(pRenderContext) > 0)
+                mpEmissiveSampler = std::make_unique<EmissivePowerSampler>(pRenderContext, mpScene->getILightCollection(pRenderContext));
+            auto defines = mpEmissiveSampler->getDefines();
+            mTracer.pProgram->addDefines(defines);
+        }
+    }
+    else
+    {
+        // Clear emissive sampler if emissive lights are disabled
+        mpEmissiveSampler = nullptr;
     }
 
     // Configure depth-of-field.
@@ -226,6 +244,7 @@ void MinimalPathTracer::setScene(RenderContext* pRenderContext, const ref<Scene>
     mTracer.pProgram = nullptr;
     mTracer.pBindingTable = nullptr;
     mTracer.pVars = nullptr;
+    mpEmissiveSampler = nullptr;
     mFrameCount = 0;
 
     // Set new scene.
@@ -316,4 +335,8 @@ void MinimalPathTracer::prepareVars()
     // Bind utility classes into shared data.
     auto var = mTracer.pVars->getRootVar();
     mpSampleGenerator->bindShaderData(var);
+
+    // Bind emissive light sampler if available
+    if (mpEmissiveSampler)
+        mpEmissiveSampler->bindShaderData(var["CB"]["emissiveSampler"]);
 }

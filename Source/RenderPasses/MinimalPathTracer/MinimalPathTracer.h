@@ -29,6 +29,7 @@
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
 #include "Utils/Sampling/SampleGenerator.h"
+#include "Rendering/Lights/EmissivePowerSampler.h"
 
 using namespace Falcor;
 
@@ -72,6 +73,8 @@ private:
     ref<Scene> mpScene;
     /// GPU sample generator.
     ref<SampleGenerator> mpSampleGenerator;
+    /// Emissive light sampler.
+    std::unique_ptr<EmissiveLightSampler> mpEmissiveSampler;
 
     // Configuration
 

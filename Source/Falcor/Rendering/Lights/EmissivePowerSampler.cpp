@@ -81,6 +81,15 @@ namespace Falcor
     EmissivePowerSampler::EmissivePowerSampler(RenderContext* pRenderContext, ref<ILightCollection> pLightCollection)
         : EmissiveLightSampler(EmissiveLightSamplerType::Power, std::move(pLightCollection))
     {
+        // Get global list of emissive triangles.
+        FALCOR_ASSERT(mpLightCollection);
+        const auto& triangles = mpLightCollection->getMeshLightTriangles(pRenderContext);
+
+        const size_t numTris = triangles.size();
+        std::vector<float> weights(numTris);
+        for (size_t i = 0; i < numTris; i++) weights[i] = triangles[i].flux;
+
+        mTriangleTable = generateAliasTable(std::move(weights));
     }
 
     EmissivePowerSampler::AliasTable EmissivePowerSampler::generateAliasTable(std::vector<float> weights)
