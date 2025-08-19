@@ -1,73 +1,65 @@
-import os
-os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
-import cv2
 import numpy as np
-from scipy.sparse.linalg import cg, LinearOperator
+from scipy.sparse.linalg import LinearOperator
+from LinearSolver import LinearSolver
 
-def divergence(gx, gy):
-    div = np.zeros_like(gx)
-    div[0, :, :] -= gx[0, :, :]         # top row
-    div[1:-1, :, :] +=  gx[:-2, :, :] - gx[1:-1, :, :]
-    div[-1, :, :] += gx[-2, :, :]       # bottom row
-    div[:, 0, :] -= gy[:, 0, :]         # left col
-    div[:, 1:-1, :] += gy[:, :-2, :] - gy[:, 1:-1, :]
-    div[:, -1, :] += gy[:, -2, :]       # right col
-    return div
 
-def laplacian_neg(image: np.ndarray) -> np.ndarray:
-    lap = -np.zeros_like(image, dtype=np.float32)
-    deg = np.zeros_like(image, dtype=np.float32)
+class PoissonReconstructor:
+    def __init__(self, lambd=0.1, verbose=False):
+        self.lambd = lambd
+        self.solver = LinearSolver(verbose)
 
-    lap[:-1] -= image[1:]
-    lap[1:]  -= image[:-1]
-    deg[:-1] += 1; deg[1:] += 1
+    def computeDivergence(self, gx, gy):
+        div = np.zeros_like(gx)
+        div[0, :, :] -= gx[0, :, :]                          # top row
+        div[1:-1, :, :] += gx[:-2, :, :] - gx[1:-1, :, :]
+        div[-1, :, :] += gx[-2, :, :]                        # bottom row
+        div[:, 0, :] -= gy[:, 0, :]                          # left column
+        div[:, 1:-1, :] += gy[:, :-2, :] - gy[:, 1:-1, :]
+        div[:, -1, :] += gy[:, -2, :]                        # right column
+        return div
 
-    lap[:, :-1] -= image[:, 1:]
-    lap[:, 1:]  -= image[:, :-1]
-    deg[:, :-1] += 1; deg[:, 1:] += 1
+    def computeLaplacian(self, img):
+        lap = -np.zeros_like(img, dtype=np.float32)
+        deg = np.zeros_like(img, dtype=np.float32)
 
-    lap += deg * image
-    return lap
+        lap[:-1] -= img[1:]
+        lap[1:] -= img[:-1]
+        deg[:-1] += 1; deg[1:] += 1
 
-def poisson_reconstruct(grad_x, grad_y, I0):
-    lambd = 0.1
-    H, W, C = I0.shape
-    rhs = divergence(grad_x, grad_y) + lambd * I0.astype(np.float32)
-    result = np.zeros_like(I0, dtype=np.float32)
+        lap[:, :-1] -= img[:, 1:]
+        lap[:, 1:] -= img[:, :-1]
+        deg[:, :-1] += 1; deg[:, 1:] += 1
 
-    for ch in range(C):
-        b = rhs[..., ch].ravel()
-        x0 = I0[..., ch].ravel()
+        return lap + deg * img
 
-        res_history = []
-        def cb_xk(xk):
-            r = b - A @ xk
-            res = np.linalg.norm(r)
-            res_history.append(res)
-            print(f"[ch {ch}] iter {len(res_history):3d}: residual = {res:.6e}")
+    def reconstructChannel(self, gradX, gradY, initialImg, channel=None):
+        H, W = initialImg.shape
 
-        def mv(v):
-            v_img = v.reshape(H, W, 1)
-            return (laplacian_neg(v_img) + lambd * v_img).ravel()
+        gx3d = gradX[..., np.newaxis]
+        gy3d = gradY[..., np.newaxis]
+        img3d = initialImg[..., np.newaxis]
 
-        A = LinearOperator((H*W, H*W), matvec=mv, dtype=np.float32)
+        # Poisson equation: (Laplacian + λI) * x = div(grad) + λ * initialImg
+        # b = right hand side: divergence of gradients + regularization term
+        rhs = self.computeDivergence(gx3d, gy3d) + self.lambd * img3d.astype(np.float32)
+        b = rhs[..., 0].ravel()
 
-        sol, info = cg(A, b, x0, rtol=1e-10, atol=0, maxiter=500)
-        # sol, info = cg(A, b, x0, rtol=1e-10, atol=0, maxiter=500, callback=cb_xk)
+        # A = left hand side operator: (Laplacian + λI)
+        # x = unknown reconstructed image (what we solve for)
+        def matVec(v):
+            vImg = v.reshape(H, W, 1)
+            return (self.computeLaplacian(vImg) + self.lambd * vImg).ravel()
 
-        result[..., ch] = sol.reshape(H, W)
+        A = LinearOperator((H*W, H*W), matvec=matVec, dtype=np.float32)
+        sol, info = self.solver.solveCG(A, b, initialImg.ravel(), channel)
+        return sol.reshape(H, W)
 
-    return result
+    def reconstruct(self, gradX, gradY, initialImg):
+        H, W, C = initialImg.shape
+        result = np.zeros_like(initialImg, dtype=np.float32)
 
-# it seems grad X Y is swapped, since H, W is swapped
+        for ch in range(C):
+            result[..., ch] = self.reconstructChannel(
+                gradX[..., ch], gradY[..., ch], initialImg[..., ch], ch)
 
-# Process different SPP values for gradients
-spp_values = [32, 64, 128, 1024, 50000]
-for spp in spp_values:
-    pt = cv2.imread(f"../output/Mogwai.AccumulatePass.output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-    gradY = cv2.imread(f"../output/Mogwai.ErrorMeasureXPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-    gradX = cv2.imread(f"../output/Mogwai.ErrorMeasureYPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-
-    reconstructed = poisson_reconstruct(gradX, gradY, pt)
-    cv2.imwrite(f"../minimal_result/poisson-{spp}.exr", reconstructed.astype(np.float32))
-    print(f"Completed reconstruction with gradient {spp}spp and pt {spp}spp")
+        return result
