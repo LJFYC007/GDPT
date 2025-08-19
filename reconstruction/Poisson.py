@@ -1,12 +1,11 @@
 import numpy as np
 from scipy.sparse.linalg import LinearOperator
-from LinearSolver import LinearSolver
-
+import scipy.sparse.linalg
 
 class PoissonReconstructor:
     def __init__(self, lambd=0.1, verbose=False):
         self.lambd = lambd
-        self.solver = LinearSolver(verbose)
+        self.verbose = verbose
 
     def computeDivergence(self, gx, gy):
         div = np.zeros_like(gx)
@@ -51,7 +50,15 @@ class PoissonReconstructor:
             return (self.computeLaplacian(vImg) + self.lambd * vImg).ravel()
 
         A = LinearOperator((H*W, H*W), matvec=matVec, dtype=np.float32)
-        sol, info = self.solver.solveCG(A, b, initialImg.ravel(), channel)
+
+        def callback(xk):
+            r = b - A @ xk
+            res = np.linalg.norm(r)
+            print(f"[ch {channel}] residual = {res:.6e}")
+        if self.verbose:
+            sol, info = scipy.sparse.linalg.cg(A, b, x0=initialImg.ravel(), rtol=1e-10, maxiter=500, callback=callback)
+        else:
+            sol, info = scipy.sparse.linalg.cg(A, b, x0=initialImg.ravel(), rtol=1e-10, maxiter=500)
         return sol.reshape(H, W)
 
     def reconstruct(self, gradX, gradY, initialImg):

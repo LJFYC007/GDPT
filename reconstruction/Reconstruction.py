@@ -120,8 +120,8 @@ class ReconstructionProcessor:
 
 
 if __name__ == "__main__":
-    processor = ReconstructionProcessor()
-    processor.runAll(["poisson"], SppValues)
+    processor = ReconstructionProcessor(verbose=False)
+    processor.runAll(["poisson", "generalized-poisson"], SppValues)
 
     comparator = ImageComparator()
     results = comparator.compareWithReference()
