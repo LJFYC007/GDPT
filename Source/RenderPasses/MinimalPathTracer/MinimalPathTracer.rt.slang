@@ -124,7 +124,9 @@ struct ScatterRayData
     uint instanceID;        ///< Instance ID of the hit geometry.
     float3 normal;          ///< Surface normal at hit point.
     float3 hitPoint;        ///< World space hit point position.
+    float lastPdf;          ///< Last bsdf pdf value for the scattered ray
 
+    TriangleLightHit lightHit;
     SampleGenerator sg;     ///< Per-ray state for the sample generator (up to 16B).
 
     /**
@@ -315,7 +317,10 @@ float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inou
         return float3(0.f);
 
     // Evaluate contribution.
-    return mi.eval(sd, tls.dir, sg) * tls.Le / tls.pdf;
+    float bsdfPdf = mi.evalPdf(sd, tls.dir);
+    // delta materials have zero pdf, so we skip MIS weight computation
+    float misWeight = bsdfPdf > 0.f ? evalMIS(1, tls.pdf, 1, bsdfPdf) : 0.f;
+    return misWeight * mi.eval(sd, tls.dir, sg) * tls.Le / tls.pdf;
 }
 
 /**
@@ -340,18 +345,23 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
         if (rayData.isOffsetPath)
         {
             rayData.direction = normalize(rayData.targetPoint - rayData.origin);
-            rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
-            rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+            rayData.lastPdf = mi.evalPdf(sd, rayData.direction);
+            rayData.throughput *= rayData.lastPdf;
         }
         else
         {
             rayData.direction = bsdfSample.wo;
-            // If deltaReflection or deltaTransmission, the pdf is zero
-            if (bsdfSample.pdf == 0.f) rayData.throughput *= bsdfSample.weight;
+            // If deltaReflection or deltaTransmission, the returned bsdfSample.pdf is zero
+            if (bsdfSample.pdf == 0.f)
+            {
+                rayData.throughput *= bsdfSample.weight;
+                rayData.lastPdf = 0.f;
+            }
             else
             {
                 rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
-                rayData.pdf *= mi.evalPdf(sd, rayData.direction);
+                rayData.lastPdf = mi.evalPdf(sd, rayData.direction);
+                rayData.pdf *= rayData.lastPdf;
             }
         }
         return any(rayData.throughput > 0.f);
@@ -386,7 +396,20 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // If the material is emissive, we accumulate it only on the first bounce, since we enabled NEE.
     if (kUseEmissiveLights && any(mi.getProperties(sd).emission > 0.f))
     {
-        // rayData.radiance += rayData.throughput * mi.getProperties(sd).emission / rayData.pdf;
+        float misWeight = 1.f;
+        if (rayData.lastPdf > 0.f) // delta materials have zero pdf, so we skip MIS weight computation
+        {
+            TriangleLightHit lightHit;
+            TriangleHit triangleHit = hit.getTriangleHit();
+            lightHit.triangleIndex = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
+            lightHit.posW = sd.posW;
+            lightHit.normalW = sd.getOrientedFaceNormal();
+
+            float bsdfPdf = rayData.lastPdf;
+            float lightPdf = emissiveSampler.evalPdf(rayData.origin, rayData.normal, false, lightHit);
+            misWeight = evalMIS(1, bsdfPdf, 1, lightPdf);
+        }
+        rayData.radiance += misWeight * rayData.throughput * mi.getProperties(sd).emission / rayData.pdf;
         rayData.terminated = true;
         return;
     }
