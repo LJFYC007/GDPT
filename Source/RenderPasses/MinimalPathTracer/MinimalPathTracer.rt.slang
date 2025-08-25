@@ -295,8 +295,9 @@ float evalMIS(float n0, float p0, float n1, float p1)
  * @param[in,out] sg SampleGenerator object.
  * @return Outgoing radiance in view direction.
  */
-float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inout ScatterRayData rayData)
+float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inout ScatterRayData rayData, out TriangleLightHit hit)
 {
+    rayData.lightPdf = 0.f;
     TriangleLightSample tls;
     if (!emissiveSampler.sampleLight(sd.posW, sd.faceN, false, rayData.sg, tls))
         return float3(0.f);
@@ -319,10 +320,14 @@ float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inou
     if (!V)
         return float3(0.f);
 
+    hit.triangleIndex = tls.triangleIndex;
+    hit.normalW = tls.normalW;
+    hit.posW = tls.posW;
+
     // Evaluate contribution.
     rayData.lightDir = tls.dir;
     rayData.lightPdf = tls.pdf;
-    return tls.Le / tls.pdf;
+    return tls.Le;
 }
 
 /**
@@ -391,16 +396,11 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     rayData.hitPoint = sd.posW;
     rayData.normal = sd.frame.N;
     rayData.instanceID = sd.instanceID;
+    rayData.radiance = float3(0.f);
 
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod);
-    float correctPdf = rayData.isOffsetPath ? rayData.correctPdf : rayData.pdf;
-    if (correctPdf == 0.f || rayData.pdf == 0.f)
-    {
-        rayData.terminated = true;
-        return;
-    }
 
     // If the material is emissive, we accumulate it only on the first bounce, since we enabled NEE.
     if (kUseEmissiveLights && any(mi.getProperties(sd).emission > 0.f))
@@ -418,7 +418,8 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
             float lightPdf = emissiveSampler.evalPdf(rayData.origin, rayData.normal, false, lightHit);
             misWeight = evalMIS(1, bsdfPdf, 1, lightPdf);
         }
-        rayData.radiance += misWeight * rayData.throughput * mi.getProperties(sd).emission / correctPdf;
+        rayData.radiance = misWeight * rayData.throughput * mi.getProperties(sd).emission;
+        rayData.lightPdf = 1.f;
         rayData.terminated = true;
         return;
     }
@@ -444,14 +445,15 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
 
     // Here we implement the NEE
     {
+        TriangleLightHit tlh;
         if (rayData.isOffsetPath == false)
-            rayData.lightRadiance = evalDirectEmissive(sd, mi, rayData);
+            rayData.lightRadiance = evalDirectEmissive(sd, mi, rayData, tlh);
         if (any(rayData.lightRadiance > 0.f))
         {
             float bsdfPdf = mi.evalPdf(sd, rayData.lightDir);
             // delta materials have zero pdf, so we skip MIS weight computation
             float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
-            rayData.radiance += rayData.throughput * misWeight * mi.eval(sd, rayData.lightDir, rayData.sg) * rayData.lightRadiance / correctPdf;
+            rayData.radiance = rayData.throughput * misWeight * mi.eval(sd, rayData.lightDir, rayData.sg) * rayData.lightRadiance;
         }
     }
 
@@ -466,6 +468,19 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     rayData.pathLength++;
 }
 
+// Compute geometric Jacobian for gradient domain path tracing
+float computeJacobian(float3 basePoint1, float3 basePoint2, float3 offsetPoint1, float3 normalPoint2)
+{
+    float baseDist = length(basePoint2 - basePoint1);
+    float offsetDist = length(basePoint2 - offsetPoint1);
+    float baseCosine = dot(normalize(normalPoint2), normalize(basePoint1 - basePoint2));
+    float offsetCosine = dot(normalize(normalPoint2), normalize(offsetPoint1 - basePoint2));
+    if (baseCosine == 0.f || offsetCosine == 0.f)
+        return 0.f;
+    return abs(offsetCosine * baseDist * baseDist) / (FLT_EPSILON + abs(baseCosine * offsetDist * offsetDist));
+}
+
+
 /**
  * This is the main entry point for the gradient domain path tracer.
  *
@@ -478,17 +493,17 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
  */
 void tracePath(const uint2 pixel, const uint2 frameDim)
 {
-    float3 baseRadiance = float3(0.f);
-    float3 offsetRadiance = float3(0.f);
-    float basePdf, offsetPdf;
+    float3 basePathRadiance[10], offsetPathRadiance[10];
+    float basePathPdf[10] = { 0 }, offsetPathPdf[10] = { 0 };
     float3 basePathVertices[10], basePathNormals[10];
     uint basePathInstanceIDs[10];
-    float basePathPdf[10];
-    float3 offsetStartPoint;
-    float geometricJacobian = 1.f;
+    float geometricJacobian[10];
 
     float3 lightRadiance[10], lightDir[10];
     float lightPdf[10];
+    float offsetLightPdf = 0.f; // this is only for first bounce
+    TriangleLightHit baseLightHit;
+    uint lightLength = 1;
 
     // Trace base path from the primary hit point
     {
@@ -532,14 +547,16 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
         // Here we implement the NEE
         {
-            baseRayData.lightRadiance = evalDirectEmissive(sd, mi, baseRayData);
+            baseRayData.lightRadiance = evalDirectEmissive(sd, mi, baseRayData, baseLightHit);
             if (any(baseRayData.lightRadiance > 0.f))
             {
                 float bsdfPdf = mi.evalPdf(sd, baseRayData.lightDir);
                 // delta materials have zero pdf, so we skip MIS weight computation
                 float misWeight = bsdfPdf > 0.f ? evalMIS(1, baseRayData.lightPdf, 1, bsdfPdf) : 0.f;
-                baseRayData.radiance += baseRayData.throughput * misWeight * mi.eval(sd, baseRayData.lightDir, baseRayData.sg) * baseRayData.lightRadiance / baseRayData.pdf;
+                basePathRadiance[1] = baseRayData.throughput * misWeight * mi.eval(sd, baseRayData.lightDir, baseRayData.sg) * baseRayData.lightRadiance;
             }
+            else
+                basePathRadiance[1] = float3(0.f);
         }
 
         // Generate scatter ray.
@@ -549,7 +566,10 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         // Store first vertex of base path
         basePathVertices[1] = sd.posW;
         basePathNormals[1] = sd.frame.N;
+        basePathPdf[0] = 1.f;
         basePathPdf[1] = baseRayData.pdf;
+        lightRadiance[1] = baseRayData.lightRadiance;
+        lightPdf[1] = baseRayData.lightPdf;
 
         // Follow base path into the scene and compute its total contribution.
         for (uint depth = 0; depth <= kMaxBounces && !baseRayData.terminated; depth++)
@@ -562,14 +582,12 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             basePathNormals[depth + 2] = baseRayData.normal;
             basePathInstanceIDs[depth + 2] = baseRayData.instanceID;
             basePathPdf[depth + 2] = baseRayData.pdf;
+            basePathRadiance[depth + 2] = baseRayData.radiance;
             lightRadiance[depth + 2] = baseRayData.lightRadiance;
             lightDir[depth + 2] = baseRayData.lightDir;
             lightPdf[depth + 2] = baseRayData.lightPdf;
+            lightLength = depth + 2;
         }
-
-        // Store contribution from base path.
-        baseRadiance = baseRayData.radiance;
-        basePdf = baseRayData.pdf;
     }
 
     // Early exit if base path has no contribution
@@ -634,33 +652,33 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
         // Here we implement the NEE
         {
-            offsetRayData.lightRadiance = evalDirectEmissive(sd, mi, offsetRayData);
-            if (any(offsetRayData.lightRadiance > 0.f))
+            if (any(lightRadiance[1] > 0.f))
             {
-                float bsdfPdf = mi.evalPdf(sd, offsetRayData.lightDir);
+                offsetLightPdf = emissiveSampler.evalPdf(rayOrigin, sd.frame.N, false, baseLightHit);
+                float3 dir = normalize(baseLightHit.posW - rayOrigin);
+                float bsdfPdf = mi.evalPdf(sd, dir);
                 // delta materials have zero pdf, so we skip MIS weight computation
-                float misWeight = bsdfPdf > 0.f ? evalMIS(1, offsetRayData.lightPdf, 1, bsdfPdf) : 0.f;
-                offsetRayData.radiance += offsetRayData.throughput * misWeight * mi.eval(sd, offsetRayData.lightDir, offsetRayData.sg) * offsetRayData.lightRadiance / offsetRayData.pdf;
+                float misWeight = bsdfPdf > 0.f ? evalMIS(1, offsetLightPdf, 1, bsdfPdf) : 0.f;
+
+                geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit.posW, sd.posW, baseLightHit.normalW);
+                offsetPathRadiance[1] = offsetRayData.throughput * misWeight * mi.eval(sd, dir, offsetRayData.sg) * lightRadiance[1];
             }
+            else
+                offsetPathRadiance[1] = float3(0.f);
         }
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, offsetRayData))
             offsetRayData.terminated = true;
 
-        offsetStartPoint = sd.posW;
-
-        // Compute geometric Jacobian for gradient domain path tracing
-        float baseDist = length(basePathVertices[2] - basePathVertices[1]);
-        float offsetDist = length(basePathVertices[2] - offsetStartPoint);
-        float baseCosine = dot(normalize(basePathNormals[2]), normalize(basePathVertices[1] - basePathVertices[2]));
-        float offsetCosine = dot(normalize(basePathNormals[2]), normalize(offsetStartPoint - basePathVertices[2]));
-        geometricJacobian *= abs(offsetCosine * baseDist * baseDist) / (FLT_EPSILON + abs(baseCosine * offsetDist * offsetDist));
-        if (baseCosine == 0.f || offsetCosine == 0.f)
+        geometricJacobian[2] = computeJacobian(basePathVertices[1], basePathVertices[2], sd.posW, basePathNormals[2]);
+        if (geometricJacobian[2] == 0.f)
         {
             offsetRayData.terminated = true;
             offsetRayData.pdf = 0.f;
         }
+        offsetPathPdf[0] = 1.f;
+        offsetPathPdf[1] = offsetRayData.pdf;
 
         // Follow offset path into the scene with connection to base path vertices
         for (uint depth = 0; depth <= kMaxBounces && !offsetRayData.terminated; depth++)
@@ -670,7 +688,6 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             offsetRayData.lightRadiance = lightRadiance[depth + 2];
             offsetRayData.lightDir = lightDir[depth + 2];
             offsetRayData.lightPdf = lightPdf[depth + 2];
-            offsetRayData.correctPdf = basePathPdf[depth + 1] / geometricJacobian;
 
             traceScatterRay(offsetRayData);
 
@@ -680,42 +697,52 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
                 offsetRayData.terminated = true;
                 offsetRayData.pdf = 0.f;
             }
-        }
 
-        // Store contribution from offset path.
-        offsetRadiance = offsetRayData.radiance;
-        offsetPdf = offsetRayData.pdf;
+            offsetPathRadiance[depth + 2] = offsetRayData.radiance;
+            offsetPathPdf[depth + 2] = offsetRayData.pdf;
+        }
     }
 
     // Compute importance weight for gradient estimation
-    float gradientWeight;
-    if (!any(offsetRadiance > 0.f) || offsetPdf == 0.f)
+    float3 baseColor = float3(0.f);
+    float3 offsetColor = float3(0.f);
+    float3 gradient = float3(0.f);
+    for (uint i = 1; i <= lightLength; ++i)
     {
-        gradientWeight = 1.f;
-        offsetRadiance = float3(0.f);
-    }
-    else
-        gradientWeight = 0.5f; // basePdf / (basePdf + offsetPdf * geometricJacobian);
+        float basePdf = basePathPdf[i - 1] * lightPdf[i];
+        if (basePdf == 0.f)
+            continue;
+        float offsetPdf = offsetPathPdf[i - 1] * (i == 1 ? offsetLightPdf : lightPdf[i]);
+        float geomJac = i == 1 ? geometricJacobian[1] : geometricJacobian[2];
+        baseColor += basePathRadiance[i] / basePdf;
 
-    // Compute final colors
-    float3 baseColor = baseRadiance;
-    float3 offsetColor = offsetRadiance;
+        if (offsetPdf == 0.f)
+        {
+            gradient += basePathRadiance[i] / basePdf;
+        }
+        else
+        {
+            offsetColor += geomJac * offsetPathRadiance[i] / basePdf;
+            float weight = basePdf / (basePdf + offsetPdf * geomJac);
+            gradient += weight * (basePathRadiance[i] / basePdf - geomJac * offsetPathRadiance[i] / basePdf);
+        }
+    }
 
     // Output base color
     gOutputColor[pixel] = float4(baseColor, 1.f);
-    // gOutputGradientX[pixel] = float4(baseColor, 1.f);
+    // gOutputGradientX[pixel] = float4(offsetColor - baseColor, 1.f);
     // gOutputGradientY[pixel] = float4(offsetColor, 1.f);
 
     // Output gradients based on offset direction
     // Scale factor of 4 accounts for the fact that we only compute gradients 1/4 of the time
     if (pixelOffset.x == 1 && pixelOffset.y == 0)
-        gOutputGradientX[pixel] += 4 * gradientWeight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+        gOutputGradientX[pixel] += 4 * float4(-gradient, 1.f);
     if (pixelOffset.x == 0 && pixelOffset.y == 1)
-        gOutputGradientY[pixel] += 4 * gradientWeight * (float4(offsetColor, 1.f) - float4(baseColor, 1.f));
+        gOutputGradientY[pixel] += 4 * float4(-gradient, 1.f);
     if (pixelOffset.x == -1 && pixelOffset.y == 0)
-        gOutputGradientX[pixel + pixelOffset] += 4 * gradientWeight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+        gOutputGradientX[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
     if (pixelOffset.x == 0 && pixelOffset.y == -1)
-        gOutputGradientY[pixel + pixelOffset] += 4 * gradientWeight * (float4(baseColor, 1.f) - float4(offsetColor, 1.f));
+        gOutputGradientY[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
 }
 
 //
