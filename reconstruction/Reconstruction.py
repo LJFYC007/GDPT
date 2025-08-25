@@ -7,7 +7,7 @@ from GeneralizedPoisson import GeneralizedPoissonReconstructor
 
 cv2.setLogLevel(0) # Suppress OpenCV warnings
 
-SppValues = [32, 64, 128, 1024, 50000]
+SppValues = [4, 16, 32, 64, 128, 1024]
 Methods = ["pt", "poisson", "generalized-poisson"]
 
 class ImageComparator:
