@@ -92,9 +92,9 @@ class GeneralizedPoissonReconstructor:
 
         A = cupyx.scipy.sparse.linalg.LinearOperator(shape=(N, N), matvec=matVec, dtype=cp.float32)
         if self.verbose:
-            x, info = cupyx.scipy.sparse.linalg.cg(A, b, x0=cp.array(img.ravel()), M=precond, tol=1e-10, maxiter=500, callback=callback)
+            x, info = cupyx.scipy.sparse.linalg.cg(A, b, x0=cp.array(img.ravel()), M=precond, tol=1e-10, maxiter=1000, callback=callback)
         else:
-            x, info = cupyx.scipy.sparse.linalg.cg(A, b, x0=cp.array(img.ravel()), M=precond, tol=1e-10, maxiter=500)
+            x, info = cupyx.scipy.sparse.linalg.cg(A, b, x0=cp.array(img.ravel()), M=precond, tol=1e-10, maxiter=1000)
         return cp.asnumpy(x.reshape(H, W))
 
     def reconstruct(self, img, variance, gradX, gradY, varX, varY):

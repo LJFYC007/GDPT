@@ -56,9 +56,9 @@ class PoissonReconstructor:
             res = np.linalg.norm(r)
             print(f"[ch {channel}] residual = {res:.6e}")
         if self.verbose:
-            sol, info = scipy.sparse.linalg.cg(A, b, x0=initialImg.ravel(), rtol=1e-10, maxiter=500, callback=callback)
+            sol, info = scipy.sparse.linalg.cg(A, b, x0=initialImg.ravel(), rtol=1e-10, maxiter=1000, callback=callback)
         else:
-            sol, info = scipy.sparse.linalg.cg(A, b, x0=initialImg.ravel(), rtol=1e-10, maxiter=500)
+            sol, info = scipy.sparse.linalg.cg(A, b, x0=initialImg.ravel(), rtol=1e-10, maxiter=1000)
         return sol.reshape(H, W)
 
     def reconstruct(self, gradX, gradY, initialImg):

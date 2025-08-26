@@ -406,18 +406,18 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     if (kUseEmissiveLights && any(mi.getProperties(sd).emission > 0.f))
     {
         float misWeight = 1.f;
-        if (rayData.lastPdf > 0.f) // delta materials have zero pdf, so we skip MIS weight computation
-        {
-            TriangleLightHit lightHit;
-            TriangleHit triangleHit = hit.getTriangleHit();
-            lightHit.triangleIndex = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
-            lightHit.posW = sd.posW;
-            lightHit.normalW = sd.getOrientedFaceNormal();
+        // if (rayData.lastPdf > 0.f) // delta materials have zero pdf, so we skip MIS weight computation
+        // {
+        //     TriangleLightHit lightHit;
+        //     TriangleHit triangleHit = hit.getTriangleHit();
+        //     lightHit.triangleIndex = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
+        //     lightHit.posW = sd.posW;
+        //     lightHit.normalW = sd.getOrientedFaceNormal();
 
-            float bsdfPdf = rayData.lastPdf;
-            float lightPdf = emissiveSampler.evalPdf(rayData.origin, rayData.normal, false, lightHit);
-            misWeight = evalMIS(1, bsdfPdf, 1, lightPdf);
-        }
+        //     float bsdfPdf = rayData.lastPdf;
+        //     float lightPdf = emissiveSampler.evalPdf(rayData.origin, rayData.normal, false, lightHit);
+        //     misWeight = evalMIS(1, bsdfPdf, 1, lightPdf);
+        // }
         rayData.radiance = misWeight * rayData.throughput * mi.getProperties(sd).emission;
         rayData.lightPdf = 1.f;
         rayData.terminated = true;
@@ -445,16 +445,16 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
 
     // Here we implement the NEE
     {
-        TriangleLightHit tlh;
-        if (rayData.isOffsetPath == false)
-            rayData.lightRadiance = evalDirectEmissive(sd, mi, rayData, tlh);
-        if (any(rayData.lightRadiance > 0.f))
-        {
-            float bsdfPdf = mi.evalPdf(sd, rayData.lightDir);
-            // delta materials have zero pdf, so we skip MIS weight computation
-            float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
-            rayData.radiance = rayData.throughput * misWeight * mi.eval(sd, rayData.lightDir, rayData.sg) * rayData.lightRadiance;
-        }
+        // TriangleLightHit tlh;
+        // if (rayData.isOffsetPath == false)
+        //     rayData.lightRadiance = evalDirectEmissive(sd, mi, rayData, tlh);
+        // if (any(rayData.lightRadiance > 0.f))
+        // {
+        //     float bsdfPdf = mi.evalPdf(sd, rayData.lightDir);
+        //     // delta materials have zero pdf, so we skip MIS weight computation
+        //     float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
+        //     rayData.radiance = rayData.throughput * misWeight * mi.eval(sd, rayData.lightDir, rayData.sg) * rayData.lightRadiance;
+        // }
     }
 
     // Generate scatter ray for the next path segment.
@@ -500,7 +500,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     float geometricJacobian[10];
 
     float3 lightRadiance[10], lightDir[10];
-    float lightPdf[10];
+    float lightPdf[10] = { 0 } ;
     float offsetLightPdf = 0.f; // this is only for first bounce
     TriangleLightHit baseLightHit;
     uint lightLength = 1;
@@ -547,16 +547,16 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
         // Here we implement the NEE
         {
-            baseRayData.lightRadiance = evalDirectEmissive(sd, mi, baseRayData, baseLightHit);
-            if (any(baseRayData.lightRadiance > 0.f))
-            {
-                float bsdfPdf = mi.evalPdf(sd, baseRayData.lightDir);
-                // delta materials have zero pdf, so we skip MIS weight computation
-                float misWeight = bsdfPdf > 0.f ? evalMIS(1, baseRayData.lightPdf, 1, bsdfPdf) : 0.f;
-                basePathRadiance[1] = baseRayData.throughput * misWeight * mi.eval(sd, baseRayData.lightDir, baseRayData.sg) * baseRayData.lightRadiance;
-            }
-            else
-                basePathRadiance[1] = float3(0.f);
+            // baseRayData.lightRadiance = evalDirectEmissive(sd, mi, baseRayData, baseLightHit);
+            // if (any(baseRayData.lightRadiance > 0.f))
+            // {
+            //     float bsdfPdf = mi.evalPdf(sd, baseRayData.lightDir);
+            //     // delta materials have zero pdf, so we skip MIS weight computation
+            //     float misWeight = bsdfPdf > 0.f ? evalMIS(1, baseRayData.lightPdf, 1, bsdfPdf) : 0.f;
+            //     basePathRadiance[1] = baseRayData.throughput * misWeight * mi.eval(sd, baseRayData.lightDir, baseRayData.sg) * baseRayData.lightRadiance;
+            // }
+            // else
+            //     basePathRadiance[1] = float3(0.f);
         }
 
         // Generate scatter ray.
@@ -652,19 +652,27 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
         // Here we implement the NEE
         {
-            if (any(lightRadiance[1] > 0.f))
-            {
-                offsetLightPdf = emissiveSampler.evalPdf(rayOrigin, sd.frame.N, false, baseLightHit);
-                float3 dir = normalize(baseLightHit.posW - rayOrigin);
-                float bsdfPdf = mi.evalPdf(sd, dir);
-                // delta materials have zero pdf, so we skip MIS weight computation
-                float misWeight = bsdfPdf > 0.f ? evalMIS(1, offsetLightPdf, 1, bsdfPdf) : 0.f;
+            // if (any(lightRadiance[1] > 0.f))
+            // {
+            //     offsetLightPdf = emissiveSampler.evalPdf(rayOrigin, sd.frame.N, false, baseLightHit);
+            //     float3 dir = normalize(baseLightHit.posW - rayOrigin);
+            //     float3 lightPos = computeRayOrigin(baseLightHit.posW, baseLightHit.normalW);
+            //     float3 toLight = lightPos - rayOrigin;
+            //     bool V = traceShadowRay(rayOrigin, normalize(toLight), length(toLight));
+            //     if (V)
+            //     {
+            //         float bsdfPdf = mi.evalPdf(sd, dir);
+            //         // delta materials have zero pdf, so we skip MIS weight computation
+            //         float misWeight = bsdfPdf > 0.f ? evalMIS(1, offsetLightPdf, 1, bsdfPdf) : 0.f;
 
-                geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit.posW, sd.posW, baseLightHit.normalW);
-                offsetPathRadiance[1] = offsetRayData.throughput * misWeight * mi.eval(sd, dir, offsetRayData.sg) * lightRadiance[1];
-            }
-            else
-                offsetPathRadiance[1] = float3(0.f);
+            //         geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit.posW, sd.posW, baseLightHit.normalW);
+            //         offsetPathRadiance[1] = offsetRayData.throughput * misWeight * mi.eval(sd, dir, offsetRayData.sg) * lightRadiance[1];
+            //     }
+            //     else
+            //         offsetPathRadiance[1] = float3(0.f);
+            // }
+            // else
+            //     offsetPathRadiance[1] = float3(0.f);
         }
 
         // Generate scatter ray.
@@ -716,7 +724,8 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         float geomJac = i == 1 ? geometricJacobian[1] : geometricJacobian[2];
         baseColor += basePathRadiance[i] / basePdf;
 
-        if (offsetPdf == 0.f)
+        // it seems bathPathRadiance[2] sometimes will be nan,
+        if (offsetPdf == 0.f || geomJac == 0.f || any(isnan(geomJac)))
         {
             gradient += basePathRadiance[i] / basePdf;
         }
@@ -754,6 +763,8 @@ void scatterMiss(inout ScatterRayData rayData)
 {
     // Ray missed the scene. Mark the ray as terminated.
     rayData.terminated = true;
+    rayData.pdf = 0.f;
+    rayData.radiance = float3(0.f);
 
     // Add contribution from distant light (env map) in this direction.
     // if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
