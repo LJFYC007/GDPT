@@ -9,9 +9,11 @@ cv2.setLogLevel(0) # Suppress OpenCV warnings
 
 SppValues = [4, 16, 32, 64, 128, 1024]
 Methods = ["pt", "poisson", "generalized-poisson"]
+SceneName = "kitchen"
+ReferenceImage = "reference.exr"
 
 class ImageComparator:
-    def __init__(self, resultDir="../minimal_result", refFile="reference-staircase.exr"):
+    def __init__(self, resultDir=f"../result/{SceneName}", refFile=ReferenceImage):
         self.resultDir = resultDir
         self.refFile = refFile
 
@@ -42,15 +44,15 @@ class ImageComparator:
         return results
 
     def printResults(self, results):
-        print("\n=== MSE Results ===")
-        header = "Method".ljust(12)
+        print(f"\n=== {SceneName} MSE Results ===")
+        header = "Method".ljust(20)
         for spp in SppValues:
             header += f"{spp}spp".ljust(15)
         print(header)
         print("-" * len(header))
 
         for method in Methods:
-            row = method.ljust(12)
+            row = method.ljust(20)
             for spp in SppValues:
                 mse = results.get(method, {}).get(spp)
                 if mse is not None:
@@ -62,7 +64,7 @@ class ImageComparator:
 
 
 class ReconstructionProcessor:
-    def __init__(self, outputDir="../output", resultDir="../minimal_result", verbose=False):
+    def __init__(self, outputDir="../output", resultDir=f"../result/{SceneName}", verbose=False):
         self.outputDir = outputDir
         self.resultDir = resultDir
 
