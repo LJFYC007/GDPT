@@ -12,7 +12,6 @@ def render_graph_PathTracer():
     g.addEdge("VBufferRT.viewW", "PathTracer.viewW")
     g.addEdge("PathTracer.color", "AccumulatePass.input")
     g.markOutput("AccumulatePass.output")
-    g.markOutput("AccumulatePass.variance")
     g.markOutput("PathTracer.color")
     # g.markOutput("PathTracer.gradientX")
     # g.markOutput("PathTracer.gradientY")
@@ -41,17 +40,30 @@ def render_graph_PathTracer():
     # g.markOutput("AccumulatePassX.output")
     # g.markOutput("AccumulatePassY.output")
 
-    ErrorMeasureXPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\minimal_result\\reference-gradientX.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
+    ErrorMeasureXPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\result\\staircase\\reference-gradientX.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
     g.addPass(ErrorMeasureXPass, "ErrorMeasureXPass")
     g.addEdge("AccumulatePassX.output", "ErrorMeasureXPass.Source")
-    g.markOutput("AccumulatePassX.variance")
     g.markOutput("ErrorMeasureXPass.Output")
 
-    ErrorMeasureYPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\minimal_result\\reference-gradientY.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
+    ErrorMeasureYPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\result\\staircase\\reference-gradientY.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
     g.addPass(ErrorMeasureYPass, "ErrorMeasureYPass")
     g.addEdge("AccumulatePassY.output", "ErrorMeasureYPass.Source")
-    g.markOutput("AccumulatePassY.variance")
     g.markOutput("ErrorMeasureYPass.Output")
+
+    PostProcess = createPass("PostProcess", {'sigma': 3.0, 'kernelWidth': 11})
+    g.addPass(PostProcess, "PostProcess")
+    g.addEdge("AccumulatePass.variance", "PostProcess.Input")
+    g.markOutput("PostProcess.Output")
+
+    PostProcessX = createPass("PostProcess", {'sigma': 3.0, 'kernelWidth': 11})
+    g.addPass(PostProcessX, "PostProcessX")
+    g.addEdge("AccumulatePassX.variance", "PostProcessX.Input")
+    g.markOutput("PostProcessX.Output")
+
+    PostProcessY = createPass("PostProcess", {'sigma': 3.0, 'kernelWidth': 11})
+    g.addPass(PostProcessY, "PostProcessY")
+    g.addEdge("AccumulatePassY.variance", "PostProcessY.Input")
+    g.markOutput("PostProcessY.Output")
 
     return g
 
@@ -59,6 +71,6 @@ PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-# m.clock.exitFrame = 1100
+m.clock.exitFrame = 1100
 m.frameCapture.outputDir = "../../../../output"
 m.frameCapture.addFrames(m.activeGraph, [4, 16, 32, 64, 128, 1024])

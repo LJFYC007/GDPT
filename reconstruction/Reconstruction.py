@@ -9,7 +9,7 @@ cv2.setLogLevel(0) # Suppress OpenCV warnings
 
 SppValues = [4, 16, 32, 64, 128, 1024]
 Methods = ["pt", "poisson", "generalized-poisson"]
-SceneName = "kitchen"
+SceneName = "staircase"
 ReferenceImage = "reference.exr"
 
 class ImageComparator:
@@ -78,9 +78,9 @@ class ReconstructionProcessor:
         data['gradY'] = cv2.imread(f"{self.outputDir}/Mogwai.ErrorMeasureYPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
 
         if method == "generalized-poisson":
-            data['variance'] = cv2.imread(f"{self.outputDir}/Mogwai.AccumulatePass.variance.{spp}.exr", cv2.IMREAD_UNCHANGED)
-            data['varX'] = cv2.imread(f"{self.outputDir}/Mogwai.AccumulatePassX.variance.{spp}.exr", cv2.IMREAD_UNCHANGED)
-            data['varY'] = cv2.imread(f"{self.outputDir}/Mogwai.AccumulatePassY.variance.{spp}.exr", cv2.IMREAD_UNCHANGED)
+            data['variance'] = cv2.imread(f"{self.outputDir}/Mogwai.PostProcess.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+            data['varX'] = cv2.imread(f"{self.outputDir}/Mogwai.PostProcessX.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+            data['varY'] = cv2.imread(f"{self.outputDir}/Mogwai.PostProcessY.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
 
         return data
 
