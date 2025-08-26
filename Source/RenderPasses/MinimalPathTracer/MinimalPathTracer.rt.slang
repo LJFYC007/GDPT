@@ -127,9 +127,9 @@ struct ScatterRayData
     float3 hitPoint;        ///< World space hit point position.
     float lightPdf;
     float3 lightDir;
-    float correctPdf;
     float3 lightRadiance;
 
+    TriangleLightHit tlh;
     SampleGenerator sg;     ///< Per-ray state for the sample generator (up to 16B).
 
     /**
@@ -295,7 +295,7 @@ float evalMIS(float n0, float p0, float n1, float p1)
  * @param[in,out] sg SampleGenerator object.
  * @return Outgoing radiance in view direction.
  */
-float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inout ScatterRayData rayData, out TriangleLightHit hit)
+float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inout ScatterRayData rayData)
 {
     rayData.lightPdf = 0.f;
     TriangleLightSample tls;
@@ -320,9 +320,9 @@ float3 evalDirectEmissive(const ShadingData sd, const IMaterialInstance mi, inou
     if (!V)
         return float3(0.f);
 
-    hit.triangleIndex = tls.triangleIndex;
-    hit.normalW = tls.normalW;
-    hit.posW = tls.posW;
+    rayData.tlh.triangleIndex = tls.triangleIndex;
+    rayData.tlh.normalW = tls.normalW;
+    rayData.tlh.posW = tls.posW;
 
     // Evaluate contribution.
     rayData.lightDir = tls.dir;
@@ -380,6 +380,43 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
 
     rayData.pdf = 0.f;
     return false;
+}
+
+float3 calculateBaseNEE(const ShadingData sd, const IMaterialInstance mi, inout ScatterRayData rayData)
+{
+    rayData.lightRadiance = evalDirectEmissive(sd, mi, rayData);
+    if (any(rayData.lightRadiance > 0.f))
+    {
+        float bsdfPdf = mi.evalPdf(sd, rayData.lightDir);
+        // delta materials have zero pdf, so we skip MIS weight computation
+        float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
+        return rayData.throughput * misWeight * mi.eval(sd, rayData.lightDir, rayData.sg) * rayData.lightRadiance;
+    }
+    return float3(0.f);
+}
+
+float3 calculateOffsetNEE(const ShadingData sd, const IMaterialInstance mi, const float3 rayOrigin, inout ScatterRayData rayData)
+{
+    bool isDelta = mi.getLobeTypes(sd) == LobeType::DeltaReflection || mi.getLobeTypes(sd) == LobeType::DeltaTransmission;
+    if (any(rayData.lightRadiance > 0.f) && !isDelta)
+    {
+        rayData.lightPdf = emissiveSampler.evalPdf(rayOrigin, sd.frame.N, false, rayData.tlh);
+        float3 dir = normalize(rayData.tlh.posW - rayOrigin);
+        float3 lightPos = computeRayOrigin(rayData.tlh.posW, rayData.tlh.normalW);
+        float3 toLight = lightPos - rayOrigin;
+        bool V = traceShadowRay(rayOrigin, normalize(toLight), length(toLight));
+        if (V)
+        {
+            float bsdfPdf = mi.evalPdf(sd, dir);
+            // delta materials have zero pdf, so we skip MIS weight computation
+            float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
+
+            // geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit[1].posW, sd.posW, baseLightHit[1].normalW);
+            return rayData.throughput * misWeight * mi.eval(sd, dir, rayData.sg) * rayData.lightRadiance;
+        }
+    }
+    rayData.lightPdf = 0.f;
+    return float3(0.f);
 }
 
 /**
@@ -450,14 +487,9 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     {
         TriangleLightHit tlh;
         if (rayData.isOffsetPath == false)
-            rayData.lightRadiance = evalDirectEmissive(sd, mi, rayData, tlh);
-        if (any(rayData.lightRadiance > 0.f))
-        {
-            float bsdfPdf = mi.evalPdf(sd, rayData.lightDir);
-            // delta materials have zero pdf, so we skip MIS weight computation
-            float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
-            rayData.radiance = rayData.throughput * misWeight * mi.eval(sd, rayData.lightDir, rayData.sg) * rayData.lightRadiance;
-        }
+            rayData.radiance = calculateBaseNEE(sd, mi, rayData);
+        else
+            rayData.radiance = calculateOffsetNEE(sd, mi, rayOrigin, rayData);
     }
 
     // Generate scatter ray for the next path segment.
@@ -496,16 +528,15 @@ float computeJacobian(float3 basePoint1, float3 basePoint2, float3 offsetPoint1,
  */
 void tracePath(const uint2 pixel, const uint2 frameDim)
 {
-    float3 basePathRadiance[10], offsetPathRadiance[10];
+    float3 basePathRadiance[10] = { 0 }, offsetPathRadiance[10] = { 0 };
     float basePathPdf[10] = { 0 }, offsetPathPdf[10] = { 0 };
     float3 basePathVertices[10], basePathNormals[10];
     uint basePathInstanceIDs[10];
     float geometricJacobian[10];
 
-    float3 lightRadiance[10], lightDir[10];
-    float lightPdf[10] = { 0 } ;
-    float offsetLightPdf = 0.f; // this is only for first bounce
-    TriangleLightHit baseLightHit;
+    float3 lightRadiance[10];
+    float lightPdf[10] = { 0 }, offsetLightPdf[10] = { 0 };
+    TriangleLightHit baseLightHit[10];
     uint lightLength = 1;
 
     // Trace base path from the primary hit point
@@ -549,18 +580,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         ScatterRayData baseRayData = ScatterRayData(sg);
 
         // Here we implement the NEE
-        {
-            baseRayData.lightRadiance = evalDirectEmissive(sd, mi, baseRayData, baseLightHit);
-            if (any(baseRayData.lightRadiance > 0.f))
-            {
-                float bsdfPdf = mi.evalPdf(sd, baseRayData.lightDir);
-                // delta materials have zero pdf, so we skip MIS weight computation
-                float misWeight = bsdfPdf > 0.f ? evalMIS(1, baseRayData.lightPdf, 1, bsdfPdf) : 0.f;
-                basePathRadiance[1] = baseRayData.throughput * misWeight * mi.eval(sd, baseRayData.lightDir, baseRayData.sg) * baseRayData.lightRadiance;
-            }
-            else
-                basePathRadiance[1] = float3(0.f);
-        }
+        basePathRadiance[1] = calculateBaseNEE(sd, mi, baseRayData);
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, baseRayData))
@@ -571,6 +591,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         basePathNormals[1] = sd.frame.N;
         basePathPdf[0] = 1.f;
         basePathPdf[1] = baseRayData.pdf;
+        baseLightHit[1] = baseRayData.tlh;
         lightRadiance[1] = baseRayData.lightRadiance;
         lightPdf[1] = baseRayData.lightPdf;
 
@@ -586,8 +607,8 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             basePathInstanceIDs[depth + 2] = baseRayData.instanceID;
             basePathPdf[depth + 2] = baseRayData.pdf;
             basePathRadiance[depth + 2] = baseRayData.radiance;
+            baseLightHit[depth + 2] = baseRayData.tlh;
             lightRadiance[depth + 2] = baseRayData.lightRadiance;
-            lightDir[depth + 2] = baseRayData.lightDir;
             lightPdf[depth + 2] = baseRayData.lightPdf;
             lightLength = depth + 2;
         }
@@ -652,31 +673,13 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         offsetRayData.isOffsetPath = true;
         offsetRayData.targetPoint = basePathVertices[2];  // Connect to first bounce of base path
         offsetRayData.instanceID = sd.instanceID;
+        offsetRayData.lightRadiance = lightRadiance[1];
+        offsetRayData.tlh = baseLightHit[1];
 
         // Here we implement the NEE
-        {
-            if (any(lightRadiance[1] > 0.f))
-            {
-                offsetLightPdf = emissiveSampler.evalPdf(rayOrigin, sd.frame.N, false, baseLightHit);
-                float3 dir = normalize(baseLightHit.posW - rayOrigin);
-                float3 lightPos = computeRayOrigin(baseLightHit.posW, baseLightHit.normalW);
-                float3 toLight = lightPos - rayOrigin;
-                bool V = traceShadowRay(rayOrigin, normalize(toLight), length(toLight));
-                if (V)
-                {
-                    float bsdfPdf = mi.evalPdf(sd, dir);
-                    // delta materials have zero pdf, so we skip MIS weight computation
-                    float misWeight = bsdfPdf > 0.f ? evalMIS(1, offsetLightPdf, 1, bsdfPdf) : 0.f;
-
-                    geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit.posW, sd.posW, baseLightHit.normalW);
-                    offsetPathRadiance[1] = offsetRayData.throughput * misWeight * mi.eval(sd, dir, offsetRayData.sg) * lightRadiance[1];
-                }
-                else
-                    offsetPathRadiance[1] = float3(0.f);
-            }
-            else
-                offsetPathRadiance[1] = float3(0.f);
-        }
+        offsetPathRadiance[1] = calculateOffsetNEE(sd, mi, rayOrigin, offsetRayData);
+        offsetLightPdf[1] = offsetRayData.lightPdf;
+        geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit[1].posW, sd.posW, baseLightHit[1].normalW);
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, offsetRayData))
@@ -697,8 +700,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             // Set next target point for offset path connection
             offsetRayData.targetPoint = basePathVertices[depth + 3];
             offsetRayData.lightRadiance = lightRadiance[depth + 2];
-            offsetRayData.lightDir = lightDir[depth + 2];
-            offsetRayData.lightPdf = lightPdf[depth + 2];
+            offsetRayData.tlh = baseLightHit[depth + 2];
 
             traceScatterRay(offsetRayData);
 
@@ -712,6 +714,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
             offsetPathRadiance[depth + 2] = offsetRayData.radiance;
             offsetPathPdf[depth + 2] = offsetRayData.pdf;
+            offsetLightPdf[depth + 2] = offsetRayData.lightPdf;
         }
     }
 
@@ -724,7 +727,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         float basePdf = basePathPdf[i - 1] * lightPdf[i];
         if (!any(basePathRadiance[i] > 0.f) || basePdf == 0.f)
             continue;
-        float offsetPdf = offsetPathPdf[i - 1] * (i == 1 ? offsetLightPdf : lightPdf[i]);
+        float offsetPdf = offsetPathPdf[i - 1] * offsetLightPdf[i];
         float geomJac = i == 1 ? geometricJacobian[1] : geometricJacobian[2];
         baseColor += basePathRadiance[i] / basePdf;
 
