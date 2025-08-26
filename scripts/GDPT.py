@@ -40,12 +40,12 @@ def render_graph_PathTracer():
     # g.markOutput("AccumulatePassX.output")
     # g.markOutput("AccumulatePassY.output")
 
-    ErrorMeasureXPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\result\\staircase\\reference-gradientX.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
+    ErrorMeasureXPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\result\\bathroom2\\reference-gradientX.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
     g.addPass(ErrorMeasureXPass, "ErrorMeasureXPass")
     g.addEdge("AccumulatePassX.output", "ErrorMeasureXPass.Source")
     g.markOutput("ErrorMeasureXPass.Output")
 
-    ErrorMeasureYPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\result\\staircase\\reference-gradientY.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
+    ErrorMeasureYPass = createPass("ErrorMeasurePass", {'ReferenceImagePath': 'E:\\GDPT\\result\\bathroom2\\reference-gradientY.exr', 'UseLoadedReference': True, 'SelectedOutputId': 'Source'})
     g.addPass(ErrorMeasureYPass, "ErrorMeasureYPass")
     g.addEdge("AccumulatePassY.output", "ErrorMeasureYPass.Source")
     g.markOutput("ErrorMeasureYPass.Output")

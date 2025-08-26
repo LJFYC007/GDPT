@@ -112,6 +112,8 @@ struct ScatterRayData
 {
     float3 radiance;        ///< Accumulated outgoing radiance from path.
     bool terminated;        ///< Set to true when path is terminated.
+    bool baseCurrent;
+    bool baseNext;
     float3 throughput;      ///< Current path throughput. This is updated at each path vertex.
     uint pathLength;        ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
     float3 origin;          ///< Next path segment origin.
@@ -120,6 +122,8 @@ struct ScatterRayData
 
     // Gradient domain specific fields
     bool isOffsetPath;      ///< True if this is an offset path for gradient computation.
+    bool isDeltaSample;
+    bool isReconnected;
     float3 targetPoint;     ///< Target point for offset path connection.
     uint instanceID;        ///< Instance ID of the hit geometry.
     float3 normal;          ///< Surface normal at hit point.
@@ -143,6 +147,8 @@ struct ScatterRayData
         this.throughput = float3(1, 1, 1);
         this.pdf = 1.f;
         this.isOffsetPath = false;
+        this.isReconnected = false;
+        this.isDeltaSample = false;
         this.origin = float3(0, 0, 0);
         this.normal = float3(1, 1, 1);
         this.direction = float3(0, 0, 0);
@@ -349,7 +355,7 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
         if (!isCurveHit && bsdfSample.isLobe(LobeType::Transmission))
             rayData.origin = sd.computeRayOrigin(false);
 
-        if (rayData.isOffsetPath)
+        if (rayData.isReconnected)
         {
             rayData.direction = normalize(rayData.targetPoint - rayData.origin);
             rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
@@ -362,17 +368,16 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
             // If deltaReflection or deltaTransmission, the returned bsdfSample.pdf is zero
             if (bsdfSample.pdf == 0.f)
             {
-                // rayData.throughput *= bsdfSample.weight;
-                // rayData.lastPdf = 0.f;
-                rayData.throughput = float3(0.f);
-                rayData.pdf = 0.f;
-                return false;
+                rayData.throughput *= bsdfSample.weight;
+                rayData.lastPdf = 0.f;
+                rayData.isDeltaSample = true;
             }
             else
             {
                 rayData.throughput *= mi.eval(sd, rayData.direction, rayData.sg);
                 rayData.lastPdf = mi.evalPdf(sd, rayData.direction);
                 rayData.pdf *= rayData.lastPdf;
+                rayData.isDeltaSample = false;
             }
         }
         return any(rayData.throughput > 0.f);
@@ -410,8 +415,6 @@ float3 calculateOffsetNEE(const ShadingData sd, const IMaterialInstance mi, cons
             float bsdfPdf = mi.evalPdf(sd, dir);
             // delta materials have zero pdf, so we skip MIS weight computation
             float misWeight = bsdfPdf > 0.f ? evalMIS(1, rayData.lightPdf, 1, bsdfPdf) : 0.f;
-
-            // geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit[1].posW, sd.posW, baseLightHit[1].normalW);
             return rayData.throughput * misWeight * mi.eval(sd, dir, rayData.sg) * rayData.lightRadiance;
         }
     }
@@ -441,6 +444,13 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // Create material instance.
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod);
+    bool isDelta = mi.getLobeTypes(sd) == LobeType::DeltaReflection || mi.getLobeTypes(sd) == LobeType::DeltaTransmission;
+    // if (rayData.isOffsetPath && isDelta != rayData.baseCurrent)
+    // {
+    //     rayData.terminated = true;
+    //     rayData.pdf = 0.f;
+    //     return;
+    // }
 
     // If the material is emissive, we accumulate it only on the first bounce, since we enabled NEE.
     if (kUseEmissiveLights && any(mi.getProperties(sd).emission > 0.f))
@@ -484,13 +494,13 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     }
 
     // Here we implement the NEE
-    {
-        TriangleLightHit tlh;
-        if (rayData.isOffsetPath == false)
-            rayData.radiance = calculateBaseNEE(sd, mi, rayData);
-        else
-            rayData.radiance = calculateOffsetNEE(sd, mi, rayOrigin, rayData);
-    }
+    if (rayData.isOffsetPath == false)
+        rayData.radiance = calculateBaseNEE(sd, mi, rayData);
+    else
+        rayData.radiance = calculateOffsetNEE(sd, mi, rayOrigin, rayData);
+
+    // if (!isDelta && !rayData.baseNext)
+    //     rayData.isReconnected = true;
 
     // Generate scatter ray for the next path segment.
     // The raygen shader will continue the path based on the returned payload.
@@ -533,6 +543,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     float3 basePathVertices[10], basePathNormals[10];
     uint basePathInstanceIDs[10];
     float geometricJacobian[10];
+    bool basePathDelta[10] = { false };
 
     float3 lightRadiance[10];
     float lightPdf[10] = { 0 }, offsetLightPdf[10] = { 0 };
@@ -591,6 +602,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         basePathNormals[1] = sd.frame.N;
         basePathPdf[0] = 1.f;
         basePathPdf[1] = baseRayData.pdf;
+        basePathDelta[1] = baseRayData.isDeltaSample;
         baseLightHit[1] = baseRayData.tlh;
         lightRadiance[1] = baseRayData.lightRadiance;
         lightPdf[1] = baseRayData.lightPdf;
@@ -607,6 +619,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
             basePathInstanceIDs[depth + 2] = baseRayData.instanceID;
             basePathPdf[depth + 2] = baseRayData.pdf;
             basePathRadiance[depth + 2] = baseRayData.radiance;
+            basePathDelta[depth + 2] = baseRayData.isDeltaSample;
             baseLightHit[depth + 2] = baseRayData.tlh;
             lightRadiance[depth + 2] = baseRayData.lightRadiance;
             lightPdf[depth + 2] = baseRayData.lightPdf;
@@ -676,45 +689,62 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         offsetRayData.lightRadiance = lightRadiance[1];
         offsetRayData.tlh = baseLightHit[1];
 
-        // Here we implement the NEE
-        offsetPathRadiance[1] = calculateOffsetNEE(sd, mi, rayOrigin, offsetRayData);
-        offsetLightPdf[1] = offsetRayData.lightPdf;
-        geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit[1].posW, sd.posW, baseLightHit[1].normalW);
-
-        // Generate scatter ray.
-        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, offsetRayData))
-            offsetRayData.terminated = true;
-
-        geometricJacobian[2] = computeJacobian(basePathVertices[1], basePathVertices[2], sd.posW, basePathNormals[2]);
-        if (geometricJacobian[2] == 0.f)
+        bool isDelta = mi.getLobeTypes(sd) == LobeType::DeltaReflection || mi.getLobeTypes(sd) == LobeType::DeltaTransmission;
+        if (isDelta == basePathDelta[1])
         {
-            offsetRayData.terminated = true;
-            offsetRayData.pdf = 0.f;
-        }
-        offsetPathPdf[0] = 1.f;
-        offsetPathPdf[1] = offsetRayData.pdf;
+            // Here we implement the NEE
+            offsetPathRadiance[1] = calculateOffsetNEE(sd, mi, rayOrigin, offsetRayData);
+            offsetLightPdf[1] = offsetRayData.lightPdf;
+            geometricJacobian[1] = computeJacobian(basePathVertices[1], baseLightHit[1].posW, sd.posW, baseLightHit[1].normalW);
 
-        // Follow offset path into the scene with connection to base path vertices
-        for (uint depth = 0; depth <= kMaxBounces && !offsetRayData.terminated; depth++)
-        {
-            // Set next target point for offset path connection
-            offsetRayData.targetPoint = basePathVertices[depth + 3];
-            offsetRayData.lightRadiance = lightRadiance[depth + 2];
-            offsetRayData.tlh = baseLightHit[depth + 2];
+            uint reconnectDepth = 0;
+            // if (!isDelta && basePathDelta[2])
+                // offsetRayData.isReconnected = true;
 
-            traceScatterRay(offsetRayData);
-
-            // Terminate if hit different geometry instance (path diverged)
-            if (offsetRayData.instanceID != basePathInstanceIDs[depth + 2])
-            {
+            // Generate scatter ray.
+            if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, offsetRayData))
                 offsetRayData.terminated = true;
-                offsetRayData.radiance = float3(0.f);
-                offsetRayData.pdf = 0.f;
-            }
 
-            offsetPathRadiance[depth + 2] = offsetRayData.radiance;
-            offsetPathPdf[depth + 2] = offsetRayData.pdf;
-            offsetLightPdf[depth + 2] = offsetRayData.lightPdf;
+            // geometricJacobian[2] = computeJacobian(basePathVertices[1], basePathVertices[2], sd.posW, basePathNormals[2]);
+            // if (geometricJacobian[2] == 0.f)
+            // {
+            //     offsetRayData.terminated = true;
+            //     offsetRayData.pdf = 0.f;
+            // }
+            offsetPathPdf[0] = 1.f;
+            offsetPathPdf[1] = offsetRayData.pdf;
+
+            // Follow offset path into the scene with connection to base path vertices
+            for (uint depth = 0; depth <= kMaxBounces && !offsetRayData.terminated; depth++)
+            {
+                // Set next target point for offset path connection
+                offsetRayData.targetPoint = basePathVertices[depth + 3];
+                offsetRayData.lightRadiance = lightRadiance[depth + 2];
+                offsetRayData.tlh = baseLightHit[depth + 2];
+                offsetRayData.baseCurrent = basePathDelta[depth + 2];
+                offsetRayData.baseNext = basePathDelta[depth + 3];
+
+                traceScatterRay(offsetRayData);
+
+                // Terminate if hit different geometry instance (path diverged)
+                if (offsetRayData.instanceID != basePathInstanceIDs[depth + 2])
+                {
+                    offsetRayData.terminated = true;
+                    offsetRayData.radiance = float3(0.f);
+                    offsetRayData.pdf = 0.f;
+                }
+
+                offsetPathRadiance[depth + 2] = offsetRayData.radiance;
+                offsetPathPdf[depth + 2] = offsetRayData.pdf;
+                offsetLightPdf[depth + 2] = offsetRayData.lightPdf;
+                if (offsetRayData.isReconnected == false)
+                {
+                    if (!offsetRayData.terminated)
+                        geometricJacobian[depth + 2] = computeJacobian(basePathVertices[depth + 2], basePathVertices[depth + 3], offsetRayData.hitPoint, basePathNormals[depth + 3]);
+                    else
+                        geometricJacobian[depth + 2] = 1.f;
+                }
+            }
         }
     }
 
@@ -728,7 +758,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         if (!any(basePathRadiance[i] > 0.f) || basePdf == 0.f)
             continue;
         float offsetPdf = offsetPathPdf[i - 1] * offsetLightPdf[i];
-        float geomJac = i == 1 ? geometricJacobian[1] : geometricJacobian[2];
+        float geomJac = geometricJacobian[i];
         baseColor += basePathRadiance[i] / basePdf;
 
         // it seems bathPathRadiance[2] sometimes will be nan,
@@ -738,7 +768,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         }
         else
         {
-            offsetColor += geomJac * offsetPathRadiance[i] / basePdf;
+            offsetColor += offsetPathRadiance[i] / offsetPdf;
             float weight = basePdf / (basePdf + offsetPdf * geomJac);
             gradient += weight * (basePathRadiance[i] / basePdf - geomJac * offsetPathRadiance[i] / basePdf);
         }
@@ -746,19 +776,19 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
 
     // Output base color
     gOutputColor[pixel] = float4(baseColor, 1.f);
-    // gOutputGradientX[pixel] = float4(offsetColor - baseColor, 1.f);
-    // gOutputGradientY[pixel] = float4(offsetColor, 1.f);
+    gOutputGradientX[pixel] = float4(offsetColor - baseColor, 1.f);
+    gOutputGradientY[pixel] = float4(offsetColor, 1.f);
 
     // Output gradients based on offset direction
     // Scale factor of 4 accounts for the fact that we only compute gradients 1/4 of the time
-    if (pixelOffset.x == 1 && pixelOffset.y == 0)
-        gOutputGradientX[pixel] += 4 * float4(-gradient, 1.f);
-    if (pixelOffset.x == 0 && pixelOffset.y == 1)
-        gOutputGradientY[pixel] += 4 * float4(-gradient, 1.f);
-    if (pixelOffset.x == -1 && pixelOffset.y == 0)
-        gOutputGradientX[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
-    if (pixelOffset.x == 0 && pixelOffset.y == -1)
-        gOutputGradientY[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
+    // if (pixelOffset.x == 1 && pixelOffset.y == 0)
+    //     gOutputGradientX[pixel] += 4 * float4(-gradient, 1.f);
+    // if (pixelOffset.x == 0 && pixelOffset.y == 1)
+    //     gOutputGradientY[pixel] += 4 * float4(-gradient, 1.f);
+    // if (pixelOffset.x == -1 && pixelOffset.y == 0)
+    //     gOutputGradientX[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
+    // if (pixelOffset.x == 0 && pixelOffset.y == -1)
+    //     gOutputGradientY[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
 }
 
 //
