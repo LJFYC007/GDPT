@@ -2,6 +2,11 @@ from falcor import *
 
 def render_graph_PathTracer():
     g = RenderGraph("PathTracer")
+
+    ReconstructionPass = createPass("ReconstructionPass", {'num': 10})
+    g.addPass(ReconstructionPass, "ReconstructionPass")
+    g.markOutput("ReconstructionPass.output")
+
     PathTracer = createPass("MinimalPathTracer", {'maxBounces': 5})
     g.addPass(PathTracer, "PathTracer")
     VBufferRT = createPass("VBufferRT", {'samplePattern': 'Stratified', 'sampleCount': 16, 'useAlphaTest': True})
@@ -65,12 +70,19 @@ def render_graph_PathTracer():
     g.addEdge("AccumulatePassY.variance", "PostProcessY.Input")
     g.markOutput("PostProcessY.Output")
 
+    g.addEdge("AccumulatePass.output", "ReconstructionPass.base")
+    g.addEdge("AccumulatePassX.output", "ReconstructionPass.gradX")
+    g.addEdge("AccumulatePassY.output", "ReconstructionPass.gradY")
+    g.addEdge("PostProcess.Output", "ReconstructionPass.variance")
+    g.addEdge("PostProcessX.Output", "ReconstructionPass.varX")
+    g.addEdge("PostProcessY.Output", "ReconstructionPass.varY")
+
     return g
 
 PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-m.clock.exitFrame = 1100
+# m.clock.exitFrame = 20
 m.frameCapture.outputDir = "../../../../output"
-m.frameCapture.addFrames(m.activeGraph, [4, 16, 32, 64, 128, 1024])
+m.frameCapture.addFrames(m.activeGraph, [16])

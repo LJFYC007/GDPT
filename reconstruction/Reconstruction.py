@@ -7,9 +7,9 @@ from GeneralizedPoisson import GeneralizedPoissonReconstructor
 
 cv2.setLogLevel(0) # Suppress OpenCV warnings
 
-SppValues = [4, 16, 32, 64, 128, 1024]
+SppValues = [16]
 Methods = ["pt", "poisson", "generalized-poisson"]
-SceneName = "staircase"
+SceneName = "kitchen"
 ReferenceImage = "reference.exr"
 
 class ImageComparator:
@@ -111,18 +111,18 @@ class ReconstructionProcessor:
 
     def runAll(self, methods, sppList):
         for spp in sppList:
-            data = self.loadData(spp)
-            if data['pt'] is not None:
-                self.saveResult(data['pt'], "pt", spp)
+            # data = self.loadData(spp)
+            # if data['pt'] is not None:
+            #     self.saveResult(data['pt'], "pt", spp)
 
-            if "poisson" in methods:
-                self.runPoisson(spp)
+            # if "poisson" in methods:
+            #     self.runPoisson(spp)
             if "generalized-poisson" in methods:
                 self.runGeneralizedPoisson(spp)
 
 
 if __name__ == "__main__":
-    processor = ReconstructionProcessor(verbose=False)
+    processor = ReconstructionProcessor(verbose=True)
     processor.runAll(["poisson", "generalized-poisson"], SppValues)
 
     comparator = ImageComparator()

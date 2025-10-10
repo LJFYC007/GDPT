@@ -28,6 +28,7 @@
 #pragma once
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
+#include "Utils/Algorithm/ParallelReduction.h"
 
 using namespace Falcor;
 
@@ -53,12 +54,32 @@ public:
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
 
 private:
-    /// Compute pass that performs the denoise
-    ref<ComputePass> mpComputePass;
-    ref<ComputePass> mpClearPass;
-    ref<ComputePass> mpCopyPass;
+    void prepareComputePasses();
+    void allocateInternalTextures(uint32_t width, uint32_t height);
+    void bindCommonResources(ref<ComputePass> pPass, const ref<Texture>& pSolution, const ref<Texture>& pBase,
+        const ref<Texture>& pVariance, const ref<Texture>& pGradX, const ref<Texture>& pGradY,
+        const ref<Texture>& pVarX, const ref<Texture>& pVarY);
+    float reduceDotProduct(RenderContext* pRenderContext);
+    void placeUavBarriers(RenderContext* pRenderContext, const ref<Texture>& pSolution);
+
+    ref<ComputePass> mpInitPass;
+    ref<ComputePass> mpApplyAPass;
+    ref<ComputePass> mpUpdateSolutionPass;
+    ref<ComputePass> mpUpdateDirectionPass;
+
+    std::unique_ptr<ParallelReduction> mpReduction;
+
+    ref<Texture> mpResidual;
+    ref<Texture> mpDirection;
+    ref<Texture> mpAp;
+    ref<Texture> mpDotBuffer;
+
     /// The current scene (or nullptr if no scene)
     ref<Scene> mpScene;
 
-    int num = 1;
+    // iteration number
+    int num = 10;
+    float mEpsilon = 1e-6f;
+    float mTolerance = 1e-6f;
+    int frame = 0;
 };

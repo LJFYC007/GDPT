@@ -682,11 +682,13 @@ void Bitmap::saveImage(
         if (fileFormat == Bitmap::FileFormat::ExrFile)
         {
             flags = 0;
+            if (!is_set(exportFlags, ExportFlags::ExrFloat16))
+            {
+                flags |= EXR_FLOAT;
+            }
             if (is_set(exportFlags, ExportFlags::Uncompressed))
             {
                 flags |= EXR_NONE;
-                if (!is_set(exportFlags, ExportFlags::ExrFloat16))
-                    flags |= EXR_FLOAT;
             }
             else if (is_set(exportFlags, ExportFlags::Lossy))
             {
