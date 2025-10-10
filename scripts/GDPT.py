@@ -3,7 +3,7 @@ from falcor import *
 def render_graph_PathTracer():
     g = RenderGraph("PathTracer")
 
-    ReconstructionPass = createPass("ReconstructionPass", {'num': 10})
+    ReconstructionPass = createPass("ReconstructionPass", {'num': 30})
     g.addPass(ReconstructionPass, "ReconstructionPass")
     g.markOutput("ReconstructionPass.output")
 
@@ -83,6 +83,6 @@ PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-# m.clock.exitFrame = 20
+m.clock.exitFrame = 1100
 m.frameCapture.outputDir = "../../../../output"
-m.frameCapture.addFrames(m.activeGraph, [16])
+m.frameCapture.addFrames(m.activeGraph, [4, 16, 32, 64, 128, 1024])

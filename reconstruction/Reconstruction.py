@@ -7,8 +7,8 @@ from GeneralizedPoisson import GeneralizedPoissonReconstructor
 
 cv2.setLogLevel(0) # Suppress OpenCV warnings
 
-SppValues = [16]
-Methods = ["pt", "poisson", "generalized-poisson"]
+SppValues = [4, 16, 32, 64, 128, 1024]
+Methods = ["pt", "poisson", "generalized-poisson", "gpu"]
 SceneName = "kitchen"
 ReferenceImage = "reference.exr"
 
@@ -74,6 +74,7 @@ class ReconstructionProcessor:
     def loadData(self, spp, method="poisson"):
         data = {}
         data['pt'] = cv2.imread(f"{self.outputDir}/Mogwai.AccumulatePass.output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+        data['gpu'] = cv2.imread(f"{self.outputDir}/Mogwai.ReconstructionPass.output.{spp}.exr", cv2.IMREAD_UNCHANGED)
         data['gradX'] = cv2.imread(f"{self.outputDir}/Mogwai.ErrorMeasureXPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
         data['gradY'] = cv2.imread(f"{self.outputDir}/Mogwai.ErrorMeasureYPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
 
@@ -111,9 +112,11 @@ class ReconstructionProcessor:
 
     def runAll(self, methods, sppList):
         for spp in sppList:
-            # data = self.loadData(spp)
-            # if data['pt'] is not None:
-            #     self.saveResult(data['pt'], "pt", spp)
+            data = self.loadData(spp)
+            if data['pt'] is not None:
+                self.saveResult(data['pt'], "pt", spp)
+            if data['gpu'] is not None:
+                self.saveResult(data['gpu'], "gpu", spp)
 
             # if "poisson" in methods:
             #     self.runPoisson(spp)
@@ -122,7 +125,7 @@ class ReconstructionProcessor:
 
 
 if __name__ == "__main__":
-    processor = ReconstructionProcessor(verbose=True)
+    processor = ReconstructionProcessor(verbose=False)
     processor.runAll(["poisson", "generalized-poisson"], SppValues)
 
     comparator = ImageComparator()

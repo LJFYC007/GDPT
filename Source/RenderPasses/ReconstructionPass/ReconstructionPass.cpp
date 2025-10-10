@@ -135,6 +135,7 @@ void ReconstructionPass::allocateInternalTextures(uint32_t width, uint32_t heigh
     createTexture(mpDirection);
     createTexture(mpAp);
     createTexture(mpDotBuffer);
+    createTexture(mpPreconditioner);
 }
 
 void ReconstructionPass::bindCommonResources(ref<ComputePass> pPass, const ref<Texture>& pSolution, const ref<Texture>& pBase,
@@ -159,6 +160,7 @@ void ReconstructionPass::bindCommonResources(ref<ComputePass> pPass, const ref<T
     vars["Direction"] = mpDirection;
     vars["Ap"] = mpAp;
     vars["DotBuffer"] = mpDotBuffer;
+    vars["Preconditioner"] = mpPreconditioner;
 }
 
 float ReconstructionPass::reduceDotProduct(RenderContext* pRenderContext)
@@ -183,6 +185,7 @@ void ReconstructionPass::placeUavBarriers(RenderContext* pRenderContext, const r
     pRenderContext->uavBarrier(mpDirection.get());
     pRenderContext->uavBarrier(mpAp.get());
     pRenderContext->uavBarrier(mpDotBuffer.get());
+    pRenderContext->uavBarrier(mpPreconditioner.get());  // Add barrier for preconditioner
 }
 
 void ReconstructionPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
@@ -259,7 +262,8 @@ void ReconstructionPass::execute(RenderContext* pRenderContext, const RenderData
         mpUpdateDirectionPass->execute(pRenderContext, dispatchDims);
         placeUavBarriers(pRenderContext, pOutput);
 
-        std::cout << "Iteration " << iteration << ", prev residual norm = " << std::sqrt(prevResidualNorm) << ", new residual norm = " << std::sqrt(newResidualNorm) << ", alpha = " << alpha << ", beta = " << beta << std::endl;        prevResidualNorm = newResidualNorm;
+        // std::cout << "Iteration " << iteration << ", prev residual norm = " << std::sqrt(prevResidualNorm) << ", new residual norm = " << std::sqrt(newResidualNorm) << ", alpha = " << alpha << ", beta = " << beta << std::endl;
+        prevResidualNorm = newResidualNorm;
     }
 
     auto endTime = std::chrono::high_resolution_clock::now();

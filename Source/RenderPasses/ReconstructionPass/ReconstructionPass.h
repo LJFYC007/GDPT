@@ -66,13 +66,13 @@ private:
     ref<ComputePass> mpApplyAPass;
     ref<ComputePass> mpUpdateSolutionPass;
     ref<ComputePass> mpUpdateDirectionPass;
-
     std::unique_ptr<ParallelReduction> mpReduction;
 
     ref<Texture> mpResidual;
     ref<Texture> mpDirection;
     ref<Texture> mpAp;
     ref<Texture> mpDotBuffer;
+    ref<Texture> mpPreconditioner;
 
     /// The current scene (or nullptr if no scene)
     ref<Scene> mpScene;
