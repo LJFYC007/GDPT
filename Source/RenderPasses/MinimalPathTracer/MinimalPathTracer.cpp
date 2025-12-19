@@ -57,6 +57,8 @@ const ChannelList kOutputChannels = {
     { "color",          "gOutputColor", "Output color (sum of direct and indirect)", false, ResourceFormat::RGBA32Float },
     { "gradientX",      "gOutputGradientX", "Output gradient in X direction", false, ResourceFormat::RGBA32Float },
     { "gradientY",      "gOutputGradientY", "Output gradient in Y direction", false, ResourceFormat::RGBA32Float },
+    { "dGradientX",     "gOutputDGradientX", "Output degenerated gradient in X direction", false, ResourceFormat::RGBA32Float },
+    { "dGradientY",     "gOutputDGradientY", "Output degenerated gradient in Y direction", false, ResourceFormat::RGBA32Float },
     // clang-format on
 };
 

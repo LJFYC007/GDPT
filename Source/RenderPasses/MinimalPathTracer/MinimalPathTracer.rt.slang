@@ -84,6 +84,8 @@ Texture2D<float4> gViewW; // Optional
 RWTexture2D<float4> gOutputColor;
 RWTexture2D<float4> gOutputGradientX;
 RWTexture2D<float4> gOutputGradientY;
+RWTexture2D<float4> gOutputDGradientX;
+RWTexture2D<float4> gOutputDGradientY;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
@@ -719,6 +721,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     float3 baseColor = float3(0.f);
     float3 offsetColor = float3(0.f);
     float3 gradient = float3(0.f);
+    float3 dGradient = float3(0.f);
     for (uint i = 1; i <= lightLength; ++i)
     {
         float basePdf = basePathPdf[i - 1] * lightPdf[i];
@@ -731,7 +734,7 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
         // it seems bathPathRadiance[2] sometimes will be nan,
         if (!any(offsetPathRadiance[i] > 0.f) || offsetPdf == 0.f || geomJac == 0.f || any(isnan(geomJac)))
         {
-            gradient += basePathRadiance[i] / basePdf;
+            dGradient += basePathRadiance[i] / basePdf;
         }
         else
         {
@@ -749,13 +752,25 @@ void tracePath(const uint2 pixel, const uint2 frameDim)
     // Output gradients based on offset direction
     // Scale factor of 4 accounts for the fact that we only compute gradients 1/4 of the time
     if (pixelOffset.x == 1 && pixelOffset.y == 0)
+    {
         gOutputGradientX[pixel] += 4 * float4(-gradient, 1.f);
+        gOutputDGradientX[pixel] += 4 * float4(-dGradient, 1.f);
+    }
     if (pixelOffset.x == 0 && pixelOffset.y == 1)
+    {
         gOutputGradientY[pixel] += 4 * float4(-gradient, 1.f);
+        gOutputDGradientY[pixel] += 4 * float4(-dGradient, 1.f);
+    }
     if (pixelOffset.x == -1 && pixelOffset.y == 0)
+    {
         gOutputGradientX[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
+        gOutputDGradientX[pixel + pixelOffset] += 4 * float4(dGradient, 1.f);
+    }
     if (pixelOffset.x == 0 && pixelOffset.y == -1)
+    {
         gOutputGradientY[pixel + pixelOffset] += 4 * float4(gradient, 1.f);
+        gOutputDGradientY[pixel + pixelOffset] += 4 * float4(dGradient, 1.f);
+    }
 }
 
 //

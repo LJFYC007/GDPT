@@ -7,7 +7,7 @@ from GeneralizedPoisson import GeneralizedPoissonReconstructor
 
 cv2.setLogLevel(0) # Suppress OpenCV warnings
 
-SppValues = [4, 16, 32, 64, 128, 1024]
+SppValues = [64]
 Methods = ["pt", "poisson", "generalized-poisson", "gpu"]
 SceneName = "kitchen"
 ReferenceImage = "reference.exr"
@@ -73,15 +73,15 @@ class ReconstructionProcessor:
 
     def loadData(self, spp, method="poisson"):
         data = {}
-        data['pt'] = cv2.imread(f"{self.outputDir}/Mogwai.AccumulatePass.output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+        data['pt'] = cv2.imread(f"{self.outputDir}/color.exr", cv2.IMREAD_UNCHANGED)
         data['gpu'] = cv2.imread(f"{self.outputDir}/Mogwai.ReconstructionPass.output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-        data['gradX'] = cv2.imread(f"{self.outputDir}/Mogwai.ErrorMeasureXPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-        data['gradY'] = cv2.imread(f"{self.outputDir}/Mogwai.ErrorMeasureYPass.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+        data['gradX'] = cv2.imread(f"{self.outputDir}/gradient_x.exr", cv2.IMREAD_UNCHANGED)
+        data['gradY'] = cv2.imread(f"{self.outputDir}/gradient_y.exr", cv2.IMREAD_UNCHANGED)
 
         if method == "generalized-poisson":
-            data['variance'] = cv2.imread(f"{self.outputDir}/Mogwai.PostProcess.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-            data['varX'] = cv2.imread(f"{self.outputDir}/Mogwai.PostProcessX.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
-            data['varY'] = cv2.imread(f"{self.outputDir}/Mogwai.PostProcessY.Output.{spp}.exr", cv2.IMREAD_UNCHANGED)
+            data['variance'] = cv2.imread(f"{self.outputDir}/variance.exr", cv2.IMREAD_UNCHANGED)
+            data['varX'] = cv2.imread(f"{self.outputDir}/gradient_x_variance.exr", cv2.IMREAD_UNCHANGED)
+            data['varY'] = cv2.imread(f"{self.outputDir}/gradient_y_variance.exr", cv2.IMREAD_UNCHANGED)
 
         return data
 

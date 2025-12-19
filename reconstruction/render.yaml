@@ -1,0 +1,11 @@
+---
+luisa-render:
+  path: E:/LuisaRender/build/bin/Release/luisa-render-cli
+  backend: dx
+scene-params:
+  resolution: [1280, 720]
+  seeds: [10, 14, 1, 2, 90, 38, 22, 54]
+  gt-spp: 16384
+  # mode: "AB"
+bias: true
+...
